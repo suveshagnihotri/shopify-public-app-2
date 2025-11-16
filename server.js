@@ -649,6 +649,65 @@ app.post('/webhooks', express.raw({ type: 'application/json' }), async (req, res
           console.error('Error updating store uninstall status:', error);
         }
         break;
+
+      // Mandatory GDPR compliance webhooks
+      case 'customers/data_request':
+        // Customer has requested their data
+        // You must provide the customer's data within 30 days
+        try {
+          const data = JSON.parse(req.body.toString());
+          console.log('Customer data request received:', {
+            shop,
+            customerId: data.customer?.id,
+            email: data.customer?.email,
+            requestedAt: data.created_at,
+          });
+          // Store the request for processing
+          // In production, you should implement logic to export and provide customer data
+          // This is a placeholder - implement according to your data storage structure
+        } catch (error) {
+          console.error('Error processing customer data request:', error);
+        }
+        break;
+
+      case 'customers/redact':
+        // Customer has requested data deletion
+        // You must delete all customer data within 30 days
+        try {
+          const data = JSON.parse(req.body.toString());
+          console.log('Customer redact request received:', {
+            shop,
+            customerId: data.customer?.id,
+            email: data.customer?.email,
+            requestedAt: data.created_at,
+          });
+          // Delete customer data from your database
+          // This is a placeholder - implement according to your data storage structure
+          // Example: await Customer.deleteMany({ shop, customerId: data.customer.id });
+        } catch (error) {
+          console.error('Error processing customer redact request:', error);
+        }
+        break;
+
+      case 'shop/redact':
+        // Shop has requested data deletion
+        // You must delete all shop data within 30 days
+        try {
+          const data = JSON.parse(req.body.toString());
+          console.log('Shop redact request received:', {
+            shop,
+            requestedAt: data.created_at,
+          });
+          // Delete all shop data from your database
+          // This is a placeholder - implement according to your data storage structure
+          // Example: await Store.deleteOne({ shop });
+          // Example: await Product.deleteMany({ shop });
+          // Example: await Session.deleteMany({ shop });
+        } catch (error) {
+          console.error('Error processing shop redact request:', error);
+        }
+        break;
+
       case 'products/create':
       case 'products/update':
         // Handle product events - store/update product in MongoDB
@@ -690,6 +749,7 @@ app.post('/webhooks', express.raw({ type: 'application/json' }), async (req, res
           console.error('Error processing product webhook:', productError);
         }
         break;
+
       default:
         console.log('Unhandled webhook topic:', topic);
     }
