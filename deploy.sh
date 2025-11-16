@@ -68,9 +68,14 @@ mkdir -p logs
 # Stop existing PM2 process if running
 pm2 delete shopify-app 2>/dev/null || true
 
-# Start the application with PM2
+# Start the application with PM2 using ecosystem config
 echo "🚀 Starting application with PM2..."
-pm2 start server.js --name shopify-app --log logs/app.log --error logs/error.log --out logs/out.log
+if [ -f ecosystem.config.js ]; then
+    pm2 start ecosystem.config.js
+else
+    # Fallback if ecosystem.config.js doesn't exist
+    pm2 start server.js --name shopify-app --output logs/out.log --error logs/error.log --log logs/combined.log
+fi
 
 # Save PM2 configuration
 pm2 save
