@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ngrok Bypass - Shopify App</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ngrok Bypass Setup</h1>
+        
+        <div class="success" id="success" style="display: none;">
+            ✓ ngrok bypass cookie has been set! You can now proceed with OAuth.
+        </div>
+        
+        <div class="info">
+            <p><strong>Why is this needed?</strong></p>
+            <p>ngrok's free tier shows an interstitial page that can clear cookies. Visiting this page first sets a bypass cookie that prevents the interstitial from interfering with OAuth flows.</p>
+        </div>
+        
+        <p>If you see ngrok's warning page, click "Visit Site" to set the bypass cookie.</p>
+        
+        <button onclick="checkBypass()">Check Bypass Status</button>
+        <button onclick="startOAuth()">Start OAuth Flow</button>
+        
+        <div id="status" style="margin-top: 20px;"></div>
+    </div>
+    
+    <script>
+        function checkBypass() {
+            const statusDiv = document.getElementById('status');
+            const cookies = document.cookie;
+            
+            if (cookies.includes('abuse_interstitial')) {
+                statusDiv.innerHTML = '<div class="success">✓ Bypass cookie is set. You\'re ready to proceed!</div>';
+            } else {
+                statusDiv.innerHTML = '<div class="info">ℹ No bypass cookie found. If you see ngrok\'s interstitial, click "Visit Site".</div>';
+            }
+        }
+        
+        function startOAuth() {
+            const shop = prompt('Enter your Shopify store domain (e.g., your-store.myshopify.com):');
+            if (shop) {
+                window.location.href = `/auth?shop=${shop}`;
+            }
+        }
+        
+        // Auto-check on load
+        window.onload = function() {
+            checkBypass();
+            // Show success if bypass cookie exists
+            if (document.cookie.includes('abuse_interstitial')) {
+                document.getElementById('success').style.display = 'block';
+            }
+        };
+    </script>
+</body>
+</html>
+

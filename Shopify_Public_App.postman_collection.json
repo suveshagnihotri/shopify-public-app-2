@@ -1,0 +1,501 @@
+{
+	"info": {
+		"_postman_id": "shopify-public-app-collection",
+		"name": "Shopify Public App",
+		"description": "Collection for testing Shopify Public App endpoints",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Home",
+			"item": [
+				{
+					"name": "GET Home Page (Not Authenticated)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								""
+							]
+						},
+						"description": "Returns HTML page with installation instructions if not authenticated, or shop information if authenticated."
+					},
+					"response": []
+				},
+				{
+					"name": "GET Home Page (Authenticated)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Cookie",
+								"value": "shopify_session={{session_id}}; shop={{shop_domain}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/?shop={{shop_domain}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								""
+							],
+							"query": [
+								{
+									"key": "shop",
+									"value": "{{shop_domain}}"
+								}
+							]
+						},
+						"description": "Returns shop information if authenticated with valid session."
+					},
+					"response": []
+				}
+			],
+			"description": "Home page endpoints"
+		},
+		{
+			"name": "OAuth",
+			"item": [
+				{
+					"name": "GET Start OAuth (Missing Shop)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"auth"
+							]
+						},
+						"description": "Should return 400 error when shop parameter is missing."
+					},
+					"response": []
+				},
+				{
+					"name": "GET Start OAuth Flow",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth?shop={{shop_domain}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"auth"
+							],
+							"query": [
+								{
+									"key": "shop",
+									"value": "{{shop_domain}}",
+									"description": "Shopify store domain (e.g., example.myshopify.com)"
+								}
+							]
+						},
+						"description": "Initiates OAuth flow. Will redirect to Shopify OAuth page. Use 'Follow redirects' option in Postman settings."
+					},
+					"response": []
+				},
+				{
+					"name": "GET OAuth Callback",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/callback?code={{auth_code}}&shop={{shop_domain}}&state={{state}}&hmac={{hmac}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"auth",
+								"callback"
+							],
+							"query": [
+								{
+									"key": "code",
+									"value": "{{auth_code}}",
+									"description": "Authorization code from Shopify"
+								},
+								{
+									"key": "shop",
+									"value": "{{shop_domain}}",
+									"description": "Shopify store domain"
+								},
+								{
+									"key": "state",
+									"value": "{{state}}",
+									"description": "OAuth state parameter"
+								},
+								{
+									"key": "hmac",
+									"value": "{{hmac}}",
+									"description": "HMAC signature for verification"
+								}
+							]
+						},
+						"description": "OAuth callback endpoint. Called by Shopify after user approves app installation. Sets session cookies."
+					},
+					"response": []
+				},
+				{
+					"name": "GET OAuth Callback (Without Params)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/callback",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"auth",
+								"callback"
+							]
+						},
+						"description": "Should return error when OAuth parameters are missing."
+					},
+					"response": []
+				}
+			],
+			"description": "OAuth authentication endpoints"
+		},
+		{
+			"name": "API",
+			"item": [
+				{
+					"name": "GET Products (No Auth)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/products",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"products"
+							]
+						},
+						"description": "Should return 401 Unauthorized when no authentication is provided."
+					},
+					"response": []
+				},
+				{
+					"name": "GET Products (With Shop, No Session)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/products?shop={{shop_domain}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "shop",
+									"value": "{{shop_domain}}"
+								}
+							]
+						},
+						"description": "Should return 401 Unauthorized when shop is provided but no valid session exists."
+					},
+					"response": []
+				},
+				{
+					"name": "GET Products (Authenticated)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Cookie",
+								"value": "shopify_session={{session_id}}; shop={{shop_domain}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/products?shop={{shop_domain}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "shop",
+									"value": "{{shop_domain}}"
+								}
+							]
+						},
+						"description": "Fetches products from Shopify store. Requires valid session cookie."
+					},
+					"response": []
+				}
+			],
+			"description": "API endpoints that require authentication"
+		},
+		{
+			"name": "Webhooks",
+			"item": [
+				{
+					"name": "POST App Uninstalled",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-topic",
+								"value": "app/uninstalled",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-shop-domain",
+								"value": "{{shop_domain}}",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-hmac-sha256",
+								"value": "{{webhook_hmac}}",
+								"type": "text",
+								"description": "HMAC signature for webhook verification"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"shop_domain\": \"{{shop_domain}}\",\n  \"timestamp\": \"2024-01-01T00:00:00Z\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/webhooks",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"webhooks"
+							]
+						},
+						"description": "Webhook triggered when app is uninstalled from a store. Cleans up sessions for that shop."
+					},
+					"response": []
+				},
+				{
+					"name": "POST Product Created",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-topic",
+								"value": "products/create",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-shop-domain",
+								"value": "{{shop_domain}}",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-hmac-sha256",
+								"value": "{{webhook_hmac}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"id\": 123456789,\n  \"title\": \"Test Product\",\n  \"vendor\": \"Test Vendor\",\n  \"product_type\": \"Test Type\",\n  \"created_at\": \"2024-01-01T00:00:00Z\",\n  \"updated_at\": \"2024-01-01T00:00:00Z\",\n  \"published_at\": \"2024-01-01T00:00:00Z\",\n  \"status\": \"active\",\n  \"variants\": [\n    {\n      \"id\": 987654321,\n      \"title\": \"Default Title\",\n      \"price\": \"19.99\",\n      \"sku\": \"TEST-SKU-001\",\n      \"inventory_quantity\": 100\n    }\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/webhooks",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"webhooks"
+							]
+						},
+						"description": "Webhook triggered when a new product is created in the store."
+					},
+					"response": []
+				},
+				{
+					"name": "POST Product Updated",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-topic",
+								"value": "products/update",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-shop-domain",
+								"value": "{{shop_domain}}",
+								"type": "text"
+							},
+							{
+								"key": "x-shopify-hmac-sha256",
+								"value": "{{webhook_hmac}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"id\": 123456789,\n  \"title\": \"Updated Product Name\",\n  \"vendor\": \"Test Vendor\",\n  \"product_type\": \"Test Type\",\n  \"created_at\": \"2024-01-01T00:00:00Z\",\n  \"updated_at\": \"2024-01-02T00:00:00Z\",\n  \"published_at\": \"2024-01-01T00:00:00Z\",\n  \"status\": \"active\",\n  \"variants\": [\n    {\n      \"id\": 987654321,\n      \"title\": \"Default Title\",\n      \"price\": \"29.99\",\n      \"sku\": \"TEST-SKU-001\",\n      \"inventory_quantity\": 50\n    }\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/webhooks",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"webhooks"
+							]
+						},
+						"description": "Webhook triggered when a product is updated in the store."
+					},
+					"response": []
+				},
+				{
+					"name": "POST Webhook (No Headers)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/webhooks",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"webhooks"
+							]
+						},
+						"description": "Webhook request without Shopify headers (for testing error handling)."
+					},
+					"response": []
+				}
+			],
+			"description": "Webhook endpoints for Shopify events"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3000",
+			"type": "string"
+		},
+		{
+			"key": "shop_domain",
+			"value": "example.myshopify.com",
+			"type": "string"
+		},
+		{
+			"key": "session_id",
+			"value": "",
+			"type": "string",
+			"description": "Session ID from OAuth callback (set after successful authentication)"
+		},
+		{
+			"key": "auth_code",
+			"value": "",
+			"type": "string",
+			"description": "Authorization code from Shopify OAuth"
+		},
+		{
+			"key": "state",
+			"value": "",
+			"type": "string",
+			"description": "OAuth state parameter"
+		},
+		{
+			"key": "hmac",
+			"value": "",
+			"type": "string",
+			"description": "HMAC signature from Shopify"
+		},
+		{
+			"key": "webhook_hmac",
+			"value": "test-hmac-signature",
+			"type": "string",
+			"description": "HMAC signature for webhook verification (in production, this should be calculated)"
+		}
+	]
+}
+
