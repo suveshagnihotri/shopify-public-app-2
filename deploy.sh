@@ -129,9 +129,56 @@ fi
 # Setup Nginx reverse proxy
 echo "⚙️  Configuring Nginx..."
 sudo tee /etc/nginx/conf.d/shopify.conf > /dev/null << 'EOF'
+# HTTP server - redirect to HTTPS
 server {
     listen 80;
     server_name shopify.peeq.co.in;
+
+    # Allow Let's Encrypt verification
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Redirect all HTTP to HTTPS (uncomment after SSL is set up)
+    # location / {
+    #     return 301 https://$server_name$request_uri;
+    # }
+    
+    # Temporary: serve HTTP until SSL is configured
+    # Remove this block after running setup-ssl.sh
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
+
+# HTTPS server
+server {
+    listen 443 ssl http2;
+    server_name shopify.peeq.co.in;
+
+    # SSL Certificate paths (will be set by certbot)
+    # Uncomment after running: sudo ./setup-ssl.sh
+    # ssl_certificate /etc/letsencrypt/live/shopify.peeq.co.in/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/shopify.peeq.co.in/privkey.pem;
+    
+    # SSL Configuration (uncomment after certbot setup)
+    # ssl_protocols TLSv1.2 TLSv1.3;
+    # ssl_ciphers HIGH:!aNULL:!MD5;
+    # ssl_prefer_server_ciphers on;
+    # ssl_session_cache shared:SSL:10m;
+    # ssl_session_timeout 10m;
 
     # Increase body size limit for webhooks
     client_max_body_size 10M;
