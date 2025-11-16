@@ -19,6 +19,16 @@ if [ "$EUID" -eq 0 ]; then
    exit 1
 fi
 
+# Detect Amazon Linux version
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    AMAZON_LINUX_VERSION=$(echo $VERSION_ID | cut -d. -f1)
+else
+    AMAZON_LINUX_VERSION=2  # Default to AL2
+fi
+
+echo "Detected Amazon Linux version: $AMAZON_LINUX_VERSION"
+
 # Check if .env file exists
 if [ ! -f .env ]; then
     echo -e "${YELLOW}⚠️  .env file not found. Creating template...${NC}"
@@ -39,13 +49,21 @@ fi
 
 # Update system packages
 echo "📦 Updating system packages..."
-sudo yum update -y
+if [ "$AMAZON_LINUX_VERSION" = "2023" ]; then
+    sudo dnf update -y
+else
+    sudo yum update -y
+fi
 
 # Install Node.js if not present
 if ! command -v node &> /dev/null; then
     echo "📦 Installing Node.js..."
     curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-    sudo yum install -y nodejs
+    if [ "$AMAZON_LINUX_VERSION" = "2023" ]; then
+        sudo dnf install -y nodejs
+    else
+        sudo yum install -y nodejs
+    fi
 else
     echo -e "${GREEN}✓ Node.js already installed ($(node --version))${NC}"
 fi
@@ -91,7 +109,17 @@ fi
 # Check if Nginx is installed
 if ! command -v nginx &> /dev/null; then
     echo "📦 Installing Nginx..."
-    sudo amazon-linux-extras install -y nginx1
+    if [ "$AMAZON_LINUX_VERSION" = "2023" ]; then
+        # Amazon Linux 2023 uses dnf
+        sudo dnf install -y nginx
+    else
+        # Amazon Linux 2 uses amazon-linux-extras or yum
+        if command -v amazon-linux-extras &> /dev/null; then
+            sudo amazon-linux-extras install -y nginx1
+        else
+            sudo yum install -y nginx
+        fi
+    fi
     sudo systemctl enable nginx
     sudo systemctl start nginx
 else
