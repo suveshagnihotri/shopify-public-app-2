@@ -1,0 +1,27 @@
+[Unit]
+Description=Shopify Public App
+After=network.target mongod.service
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/shopify_public_app
+Environment=NODE_ENV=production
+EnvironmentFile=/home/ec2-user/shopify_public_app/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shopify-app
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+
