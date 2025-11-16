@@ -5,7 +5,7 @@
 
 set -e
 
-DOMAIN="shopify.peeq.co.in"
+DOMAIN="store-app.peeq.co.in"
 
 echo "🔒 Setting up SSL certificate for $DOMAIN..."
 

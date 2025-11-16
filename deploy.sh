@@ -38,7 +38,7 @@ PORT=3000
 
 SHOPIFY_API_KEY=your_shopify_api_key_here
 SHOPIFY_API_SECRET=your_shopify_api_secret_here
-SHOPIFY_APP_URL=https://shopify.peeq.co.in
+SHOPIFY_APP_URL=https://store-app.peeq.co.in
 SHOPIFY_SCOPES=read_products,write_products
 
 MONGODB_URI=your_mongodb_connection_string_here
@@ -132,7 +132,7 @@ sudo tee /etc/nginx/conf.d/shopify.conf > /dev/null << 'EOF'
 # HTTP server
 server {
     listen 80;
-    server_name shopify.peeq.co.in;
+    server_name store-app.peeq.co.in;
 
     # Allow Let's Encrypt verification
     location /.well-known/acme-challenge/ {
@@ -163,15 +163,15 @@ server {
 }
 
 # HTTPS server - UNCOMMENT AFTER RUNNING CERTBOT
-# Certbot will automatically configure this when you run: sudo certbot --nginx -d shopify.peeq.co.in
+# Certbot will automatically configure this when you run: sudo certbot --nginx -d store-app.peeq.co.in
 # 
 # server {
 #     listen 443 ssl;
 #     http2 on;
-#     server_name shopify.peeq.co.in;
+#     server_name store-app.peeq.co.in;
 #
-#     ssl_certificate /etc/letsencrypt/live/shopify.peeq.co.in/fullchain.pem;
-#     ssl_certificate_key /etc/letsencrypt/live/shopify.peeq.co.in/privkey.pem;
+#     ssl_certificate /etc/letsencrypt/live/store-app.peeq.co.in/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/store-app.peeq.co.in/privkey.pem;
 #     
 #     ssl_protocols TLSv1.2 TLSv1.3;
 #     ssl_ciphers HIGH:!aNULL:!MD5;
@@ -208,12 +208,12 @@ sudo systemctl reload nginx
 echo -e "${GREEN}✓ Deployment complete!${NC}"
 echo ""
 echo "📋 Next steps:"
-echo "1. Ensure your DNS A record points shopify.peeq.co.in to this server's IP"
-echo "2. Install SSL certificate: sudo certbot --nginx -d shopify.peeq.co.in"
+echo "1. Ensure your DNS A record points store-app.peeq.co.in to this server's IP"
+echo "2. Install SSL certificate: sudo certbot --nginx -d store-app.peeq.co.in"
 echo "3. Update Shopify Partner Dashboard:"
-echo "   - App URL: https://shopify.peeq.co.in"
-echo "   - Allowed redirection URL: https://shopify.peeq.co.in/auth/callback"
-echo "4. Test the app: https://shopify.peeq.co.in/health"
+echo "   - App URL: https://store-app.peeq.co.in"
+echo "   - Allowed redirection URL: https://store-app.peeq.co.in/auth/callback"
+echo "4. Test the app: https://store-app.peeq.co.in/health"
 echo ""
 echo "📊 PM2 Commands:"
 echo "  pm2 status          - Check app status"
