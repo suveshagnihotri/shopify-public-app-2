@@ -285,23 +285,86 @@ app.get('/auth/callback', async (req, res) => {
       }, {}),
     });
     
-    // Check if the OAuth state cookie exists
-    const stateCookieName = 'shopify_app_state';
-    if (!req.cookies[stateCookieName] && !req.headers.cookie?.includes(stateCookieName)) {
-      console.error('OAuth state cookie missing! This usually means:');
-      console.error('1. Cookie was not set during /auth (check logs above)');
-      console.error('2. Cookie was blocked by browser/ngrok');
-      console.error('3. Cookie expired (60 second timeout)');
-      console.error('4. Domain/path mismatch between /auth and /auth/callback');
-      console.error('5. ngrok interstitial page cleared cookies');
-    }
+    // Validate required OAuth parameters
+    const { code, shop, state, hmac } = req.query;
     
-    const callbackResponse = await shopify.auth.callback({
-      rawRequest: req,
-      rawResponse: res,
+    if (!code || !shop || !hmac) {
+      return res.status(400).send('Missing required OAuth parameters: code, shop, or hmac');
+    }
+
+    // Validate state parameter (CSRF protection)
+    const expectedState = req.cookies.shopify_oauth_state;
+    if (!state || state !== expectedState) {
+      console.error('OAuth state mismatch:', {
+        received: state,
+        expected: expectedState,
+        cookies: req.cookies,
+      });
+      return res.status(400).send('Invalid OAuth state parameter. Please try the installation again.');
+    }
+
+    // Verify HMAC
+    const queryString = Object.keys(req.query)
+      .filter(key => key !== 'hmac' && key !== 'signature')
+      .sort()
+      .map(key => `${key}=${req.query[key]}`)
+      .join('&');
+    
+    const calculatedHmac = crypto
+      .createHmac('sha256', process.env.SHOPIFY_API_SECRET)
+      .update(queryString)
+      .digest('hex');
+    
+    if (hmac !== calculatedHmac) {
+      console.error('OAuth HMAC verification failed');
+      return res.status(400).send('Invalid OAuth HMAC. Request may have been tampered with.');
+    }
+
+    // Exchange authorization code for access token
+    console.log('Exchanging authorization code for access token...');
+    const tokenResponse = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: process.env.SHOPIFY_API_KEY,
+        client_secret: process.env.SHOPIFY_API_SECRET,
+        code: code,
+      }),
     });
 
-    const { session } = callbackResponse;
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('Token exchange failed:', errorText);
+      return res.status(500).send('Failed to exchange authorization code for access token');
+    }
+
+    const tokenData = await tokenResponse.json();
+    const { access_token, scope } = tokenData;
+
+    if (!access_token) {
+      console.error('No access token in response:', tokenData);
+      return res.status(500).send('No access token received from Shopify');
+    }
+
+    // Create session object
+    const sessionId = `offline_${shop}`;
+    const session = {
+      id: sessionId,
+      shop: shop,
+      state: state,
+      isOnline: false,
+      accessToken: access_token,
+      scope: scope,
+    };
+
+    console.log('OAuth callback - Session created:', {
+      id: session.id,
+      shop: session.shop,
+      hasAccessToken: !!session.accessToken,
+      scope: session.scope,
+    });
 
     // Update callback record with session ID and success status
     if (callbackRecord) {
@@ -314,16 +377,6 @@ app.get('/auth/callback', async (req, res) => {
         console.error('Error updating callback record:', updateError);
       }
     }
-    
-    // Log session details for debugging
-    console.log('OAuth callback - Session created:', {
-      id: session.id,
-      shop: session.shop,
-      hasAccessToken: !!session.accessToken,
-      accessTokenLength: session.accessToken?.length,
-      expires: session.expires,
-      scope: session.scope,
-    });
     
     // Manually store the session since Shopify API may not be calling storeSession
     // This ensures the session is persisted to MongoDB
