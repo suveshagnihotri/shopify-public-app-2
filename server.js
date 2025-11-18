@@ -2,6 +2,7 @@ require('dotenv').config();
 // Import Node.js adapter for Shopify API (required for v9+)
 require('@shopify/shopify-api/adapters/node');
 const crypto = require('crypto');
+const https = require('https');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const compression = require('compression');
@@ -322,25 +323,56 @@ app.get('/auth/callback', async (req, res) => {
 
     // Exchange authorization code for access token
     console.log('Exchanging authorization code for access token...');
-    const tokenResponse = await fetch(`https://${shop}/admin/oauth/access_token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    let tokenData;
+    try {
+      tokenData = await new Promise((resolve, reject) => {
+      const postData = JSON.stringify({
         client_id: process.env.SHOPIFY_API_KEY,
         client_secret: process.env.SHOPIFY_API_SECRET,
         code: code,
-      }),
-    });
+      });
 
-    if (!tokenResponse.ok) {
-      const errorText = await tokenResponse.text();
-      console.error('Token exchange failed:', errorText);
-      return res.status(500).send('Failed to exchange authorization code for access token');
+      const options = {
+        hostname: shop,
+        port: 443,
+        path: '/admin/oauth/access_token',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+        },
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`Token exchange failed: ${res.statusCode} - ${data}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error(`Failed to parse token response: ${e.message}`));
+          }
+        });
+      });
+
+      req.on('error', (e) => {
+        reject(new Error(`Token exchange request failed: ${e.message}`));
+      });
+
+      req.write(postData);
+      req.end();
+      });
+    } catch (tokenError) {
+      console.error('Token exchange error:', tokenError);
+      return res.status(500).send(`Failed to exchange authorization code: ${tokenError.message}`);
     }
 
-    const tokenData = await tokenResponse.json();
     const { access_token, scope } = tokenData;
 
     if (!access_token) {
@@ -471,6 +503,11 @@ app.get('/auth/callback', async (req, res) => {
       httpOnly: true,
       secure: isSecure,
       sameSite: 'lax',
+      path: '/',
+    });
+
+    // Clear the OAuth state cookie after successful authentication
+    res.clearCookie('shopify_oauth_state', {
       path: '/',
     });
 
