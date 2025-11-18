@@ -512,15 +512,26 @@ app.get('/auth/callback', async (req, res) => {
     });
 
     // For public (non-embedded) apps, redirect to Shopify admin grant page
-    // The grant page URL uses the 'host' parameter from the callback query
-    // Format: https://admin.shopify.com/store/{host}/app/grant
+    // The grant page URL format: https://admin.shopify.com/store/{host}/app/grant
+    // The 'host' parameter is provided by Shopify in the callback query
+    // Note: The host parameter is a base64-encoded store identifier
     const host = req.query.host;
+    
     if (host) {
+      // Construct grant page URL (format matches Shopify's expected URL)
       const grantPageUrl = `https://admin.shopify.com/store/${host}/app/grant`;
+      console.log('OAuth callback - Redirecting to grant page:', {
+        grantPageUrl,
+        host,
+        shop: session.shop,
+      });
       res.redirect(grantPageUrl);
     } else {
       // Fallback: redirect to app home if host is missing
-      res.redirect('/');
+      console.warn('OAuth callback - Missing host parameter, redirecting to app home', {
+        queryParams: Object.keys(req.query),
+      });
+      res.redirect(`/?shop=${encodeURIComponent(session.shop)}`);
     }
   } catch (error) {
     // Update callback record with error
