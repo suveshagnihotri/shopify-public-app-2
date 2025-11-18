@@ -1,0 +1,34 @@
+# Shopify App Configuration
+# This file is used by Shopify CLI to configure your app
+# Compliance webhooks MUST be registered via Shopify CLI using this file
+
+name = "shopify-public-app"
+client_id = "YOUR_SHOPIFY_API_KEY"  # Replace with your API key from Partner Dashboard
+
+[application_url]
+# Your app's main URL
+url = "https://store-app.peeq.co.in"
+
+[auth]
+redirect_urls = [
+  "https://store-app.peeq.co.in/auth/callback"
+]
+
+[webhooks]
+api_version = "2024-04"
+
+# Mandatory compliance webhooks
+# These MUST be registered via Shopify CLI: shopify app deploy
+[[webhooks.subscriptions]]
+compliance_topics = [
+  "customers/data_request",
+  "customers/redact", 
+  "shop/redact"
+]
+uri = "https://store-app.peeq.co.in/webhooks"
+
+# Optional: Add other webhooks here
+# [[webhooks.subscriptions]]
+# topics = ["products/create", "products/update", "app/uninstalled"]
+# uri = "https://store-app.peeq.co.in/webhooks"
+
