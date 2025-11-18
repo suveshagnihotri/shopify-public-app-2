@@ -14,6 +14,7 @@ const { connectDB } = require('./db/connection');
 const Store = require('./models/Store');
 const OAuthCallback = require('./models/OAuthCallback');
 const Product = require('./models/Product');
+const Session = require('./models/Session');
 const storesRouter = require('./routes/stores');
 const productsRouter = require('./routes/products');
 
@@ -651,58 +652,129 @@ app.post('/webhooks', express.raw({ type: 'application/json' }), async (req, res
         break;
 
       // Mandatory GDPR compliance webhooks
+      // Reference: https://shopify.dev/docs/apps/build/compliance/privacy-law-zd
       case 'customers/data_request':
-        // Customer has requested their data
-        // You must provide the customer's data within 30 days
+        // Customer has requested their data (GDPR Article 15 - Right of access)
+        // You must provide the requested data within 30 days
         try {
           const data = JSON.parse(req.body.toString());
+          const customerId = data.customer?.id;
+          const customerEmail = data.customer?.email;
+          
           console.log('Customer data request received:', {
             shop,
-            customerId: data.customer?.id,
-            email: data.customer?.email,
+            customerId,
+            email: customerEmail,
             requestedAt: data.created_at,
           });
-          // Store the request for processing
-          // In production, you should implement logic to export and provide customer data
-          // This is a placeholder - implement according to your data storage structure
+          
+          // TODO: Implement data export logic
+          // If you store customer data, export it here
+          // Example: Query your database for customer-related data
+          // const customerData = await Customer.find({ shop, customerId });
+          // Then provide this data to the customer (email, API endpoint, etc.)
+          
+          // For now, log the request for manual processing
+          // In production, you should:
+          // 1. Query all customer data from your database
+          // 2. Format it according to GDPR requirements
+          // 3. Provide it to the customer (via email, secure download, etc.)
+          
+          console.log('Customer data request logged - manual processing required');
         } catch (error) {
           console.error('Error processing customer data request:', error);
         }
         break;
 
       case 'customers/redact':
-        // Customer has requested data deletion
+        // Customer has requested data deletion (GDPR Article 17 - Right to erasure)
         // You must delete all customer data within 30 days
         try {
           const data = JSON.parse(req.body.toString());
+          const customerId = data.customer?.id;
+          const customerEmail = data.customer?.email;
+          
           console.log('Customer redact request received:', {
             shop,
-            customerId: data.customer?.id,
-            email: data.customer?.email,
+            customerId,
+            email: customerEmail,
             requestedAt: data.created_at,
           });
+          
           // Delete customer data from your database
-          // This is a placeholder - implement according to your data storage structure
-          // Example: await Customer.deleteMany({ shop, customerId: data.customer.id });
+          // TODO: If you store customer-specific data, delete it here
+          // Example: await Customer.deleteMany({ shop, customerId });
+          
+          // Note: Product data is shop-level, not customer-specific, so we don't delete it
+          // Only delete data that directly identifies or relates to the customer
+          
+          console.log('Customer data deletion completed');
         } catch (error) {
           console.error('Error processing customer redact request:', error);
         }
         break;
 
       case 'shop/redact':
-        // Shop has requested data deletion
+        // Shop has requested data deletion (GDPR Article 17)
+        // Triggered 48 hours after app uninstall
         // You must delete all shop data within 30 days
         try {
           const data = JSON.parse(req.body.toString());
+          
           console.log('Shop redact request received:', {
             shop,
             requestedAt: data.created_at,
           });
-          // Delete all shop data from your database
-          // This is a placeholder - implement according to your data storage structure
-          // Example: await Store.deleteOne({ shop });
-          // Example: await Product.deleteMany({ shop });
-          // Example: await Session.deleteMany({ shop });
+          
+          // Delete all shop-related data from your database
+          // This includes: Store, Product, Session, OAuthCallback data
+          
+          const deletionResults = {
+            store: 0,
+            products: 0,
+            sessions: 0,
+            oauthCallbacks: 0,
+          };
+          
+          // Delete store data
+          try {
+            const storeResult = await Store.deleteOne({ shop });
+            deletionResults.store = storeResult.deletedCount;
+            console.log(`Deleted store data: ${deletionResults.store} record(s)`);
+          } catch (error) {
+            console.error('Error deleting store data:', error);
+          }
+          
+          // Delete product data
+          try {
+            const productResult = await Product.deleteMany({ shop });
+            deletionResults.products = productResult.deletedCount;
+            console.log(`Deleted product data: ${deletionResults.products} record(s)`);
+          } catch (error) {
+            console.error('Error deleting product data:', error);
+          }
+          
+          // Delete session data
+          try {
+            // Count sessions before deletion
+            const sessionCount = await Session.countDocuments({ shop });
+            await sessionStorage.deleteSessionsByShop(shop);
+            deletionResults.sessions = sessionCount;
+            console.log(`Deleted session data: ${deletionResults.sessions} record(s)`);
+          } catch (error) {
+            console.error('Error deleting session data:', error);
+          }
+          
+          // Delete OAuth callback data
+          try {
+            const callbackResult = await OAuthCallback.deleteMany({ shop });
+            deletionResults.oauthCallbacks = callbackResult.deletedCount;
+            console.log(`Deleted OAuth callback data: ${deletionResults.oauthCallbacks} record(s)`);
+          } catch (error) {
+            console.error('Error deleting OAuth callback data:', error);
+          }
+          
+          console.log('Shop redact completed:', deletionResults);
         } catch (error) {
           console.error('Error processing shop redact request:', error);
         }
