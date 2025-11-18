@@ -129,7 +129,7 @@ const shopify = shopifyApi({
   scopes: process.env.SHOPIFY_SCOPES?.split(',') || ['read_products', 'write_products'],
   hostName: hostName,
   apiVersion: LATEST_API_VERSION,
-  isEmbeddedApp: true,
+  isEmbeddedApp: false,
   restResources,
   sessionStorage: {
     async storeSession(session) {
@@ -401,7 +401,17 @@ app.get('/auth/callback', async (req, res) => {
       path: '/',
     });
 
-    res.redirect('/');
+    // For public (non-embedded) apps, redirect to Shopify admin grant page
+    // The grant page URL uses the 'host' parameter from the callback query
+    // Format: https://admin.shopify.com/store/{host}/app/grant
+    const host = req.query.host;
+    if (host) {
+      const grantPageUrl = `https://admin.shopify.com/store/${host}/app/grant`;
+      res.redirect(grantPageUrl);
+    } else {
+      // Fallback: redirect to app home if host is missing
+      res.redirect('/');
+    }
   } catch (error) {
     // Update callback record with error
     if (callbackRecord) {
