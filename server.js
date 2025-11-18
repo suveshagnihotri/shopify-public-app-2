@@ -169,6 +169,11 @@ app.get('/auth', async (req, res) => {
     return res.status(400).send('Missing shop parameter');
   }
 
+  // Validate shop domain format
+  if (!shop.endsWith('.myshopify.com') && !shop.includes('.')) {
+    return res.status(400).send('Invalid shop parameter. Must be a valid Shopify domain (e.g., example.myshopify.com)');
+  }
+
   try {
     // Log request details for debugging
     console.log('OAuth begin - Request details:', {
@@ -184,9 +189,10 @@ app.get('/auth', async (req, res) => {
     });
 
     // shopify.auth.begin() handles the redirect internally via rawResponse
+    // For non-embedded apps, this should redirect to Shopify's OAuth authorization page
     // Note: Shopify API returns 410 for bot User-Agents (like curl) as a security measure
     // Use a browser or set User-Agent header to test OAuth flow
-    await shopify.auth.begin({
+    const authResponse = await shopify.auth.begin({
       shop,
       callbackPath: '/auth/callback',
       isOnline: false,
@@ -194,16 +200,74 @@ app.get('/auth', async (req, res) => {
       rawResponse: res,
     });
 
+    // For non-embedded apps, shopify.auth.begin() should redirect automatically
+    // If it returns a response object, we need to handle the redirect manually
+    if (authResponse && authResponse.url && !res.headersSent) {
+      console.log('OAuth begin - Manual redirect needed:', authResponse.url);
+      return res.redirect(authResponse.url);
+    }
+
+    // Verify that a redirect was initiated
+    if (!res.headersSent) {
+      console.error('OAuth begin - No redirect was sent by shopify.auth.begin()');
+      // Manually construct OAuth URL as fallback for non-embedded apps
+      // Generate a state parameter for security
+      const state = crypto.randomBytes(16).toString('hex');
+      // Store state in cookie for verification in callback
+      res.cookie('shopify_oauth_state', state, {
+        httpOnly: true,
+        secure: appUrl.startsWith('https://'),
+        sameSite: 'lax',
+        maxAge: 60000, // 60 seconds
+        path: '/',
+      });
+      const redirectUri = encodeURIComponent(`${appUrl}/auth/callback`);
+      const scopes = encodeURIComponent(process.env.SHOPIFY_SCOPES || 'read_products,write_products');
+      const clientId = process.env.SHOPIFY_API_KEY;
+      const oauthUrl = `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${redirectUri}&state=${state}`;
+      console.log('OAuth begin - Falling back to manual OAuth URL construction');
+      return res.redirect(oauthUrl);
+    }
+
     // Log response headers to see what cookies were set
+    const location = res.get('Location');
     console.log('OAuth begin - Response headers:', {
       'set-cookie': res.get('Set-Cookie'),
-      location: res.get('Location'),
+      location: location,
+      headersSent: res.headersSent,
+      statusCode: res.statusCode,
     });
+
+    // Verify redirect is to Shopify OAuth page
+    if (location && !location.includes('myshopify.com/admin/oauth/authorize')) {
+      console.warn('OAuth begin - Unexpected redirect location:', location);
+    }
   } catch (error) {
     console.error('OAuth begin error:', error);
     // If response already sent (410 from Shopify API for bots), don't send again
     if (!res.headersSent) {
-      res.status(500).send('OAuth initialization failed: ' + error.message);
+      // Try manual OAuth URL construction as fallback
+      try {
+        // Generate a state parameter for security
+        const state = crypto.randomBytes(16).toString('hex');
+        // Store state in cookie for verification in callback
+        res.cookie('shopify_oauth_state', state, {
+          httpOnly: true,
+          secure: appUrl.startsWith('https://'),
+          sameSite: 'lax',
+          maxAge: 60000, // 60 seconds
+          path: '/',
+        });
+        const redirectUri = encodeURIComponent(`${appUrl}/auth/callback`);
+        const scopes = encodeURIComponent(process.env.SHOPIFY_SCOPES || 'read_products,write_products');
+        const clientId = process.env.SHOPIFY_API_KEY;
+        const oauthUrl = `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${redirectUri}&state=${state}`;
+        console.log('OAuth begin - Error fallback: redirecting to manually constructed OAuth URL');
+        return res.redirect(oauthUrl);
+      } catch (fallbackError) {
+        console.error('OAuth begin - Fallback also failed:', fallbackError);
+        res.status(500).send('OAuth initialization failed: ' + error.message);
+      }
     }
   }
 });
