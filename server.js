@@ -189,38 +189,48 @@ app.get('/auth', async (req, res) => {
       },
     });
 
-    // For non-embedded apps, manually construct OAuth URL to ensure correct redirect
-    // shopify.auth.begin() may not work correctly for non-embedded apps
-    // Generate a state parameter for security
-    const state = crypto.randomBytes(16).toString('hex');
-    // Store state in cookie for verification in callback
-    res.cookie('shopify_oauth_state', state, {
-      httpOnly: true,
-      secure: appUrl.startsWith('https://'),
-      sameSite: 'lax',
-      maxAge: 60000, // 60 seconds
-      path: '/',
-    });
-    
-    const redirectUri = encodeURIComponent(`${appUrl}/auth/callback`);
-    const scopes = encodeURIComponent(process.env.SHOPIFY_SCOPES || 'read_products,write_products');
-    const clientId = process.env.SHOPIFY_API_KEY;
-    
-    if (!clientId) {
-      console.error('OAuth begin - SHOPIFY_API_KEY is missing');
-      return res.status(500).send('OAuth initialization failed: API key not configured');
+    // Use shopify.auth.begin() to properly set up OAuth state and cookies
+    // This ensures compatibility with shopify.auth.callback() later
+    try {
+      await shopify.auth.begin({
+        shop,
+        callbackPath: '/auth/callback',
+        isOnline: false,
+        rawRequest: req,
+        rawResponse: res,
+      });
+      
+      // If shopify.auth.begin() sent a response (redirect), we're done
+      if (res.headersSent) {
+        console.log('OAuth begin - Redirect sent by shopify.auth.begin()');
+        return;
+      }
+    } catch (beginError) {
+      console.error('OAuth begin - shopify.auth.begin() failed, falling back to manual OAuth URL:', beginError.message);
+      
+      // Fallback: manually construct OAuth URL if shopify.auth.begin() fails
+      const state = crypto.randomBytes(16).toString('hex');
+      res.cookie('shopify_oauth_state', state, {
+        httpOnly: true,
+        secure: appUrl.startsWith('https://'),
+        sameSite: 'lax',
+        maxAge: 60000,
+        path: '/',
+      });
+      
+      const redirectUri = encodeURIComponent(`${appUrl}/auth/callback`);
+      const scopes = encodeURIComponent(process.env.SHOPIFY_SCOPES || 'read_products,write_products');
+      const clientId = process.env.SHOPIFY_API_KEY;
+      
+      if (!clientId) {
+        console.error('OAuth begin - SHOPIFY_API_KEY is missing');
+        return res.status(500).send('OAuth initialization failed: API key not configured');
+      }
+      
+      const oauthUrl = `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${redirectUri}&state=${state}`;
+      console.log('OAuth begin - Manual fallback redirect to OAuth authorization page');
+      return res.redirect(oauthUrl);
     }
-    
-    const oauthUrl = `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${redirectUri}&state=${state}`;
-    
-    console.log('OAuth begin - Redirecting to OAuth authorization page:', {
-      shop,
-      oauthUrl: oauthUrl.replace(clientId, '***'),
-      redirectUri,
-      scopes,
-    });
-    
-    return res.redirect(oauthUrl);
   } catch (error) {
     console.error('OAuth begin error:', error);
     if (!res.headersSent) {
@@ -286,117 +296,145 @@ app.get('/auth/callback', async (req, res) => {
       }, {}),
     });
     
-    // Validate required OAuth parameters
-    const { code, shop, state, hmac } = req.query;
-    
-    if (!code || !shop || !hmac) {
-      return res.status(400).send('Missing required OAuth parameters: code, shop, or hmac');
-    }
-
-    // Validate state parameter (CSRF protection)
-    const expectedState = req.cookies.shopify_oauth_state;
-    if (!state || state !== expectedState) {
-      console.error('OAuth state mismatch:', {
-        received: state,
-        expected: expectedState,
-        cookies: req.cookies,
-      });
-      return res.status(400).send('Invalid OAuth state parameter. Please try the installation again.');
-    }
-
-    // Verify HMAC
-    const queryString = Object.keys(req.query)
-      .filter(key => key !== 'hmac' && key !== 'signature')
-      .sort()
-      .map(key => `${key}=${req.query[key]}`)
-      .join('&');
-    
-    const calculatedHmac = crypto
-      .createHmac('sha256', process.env.SHOPIFY_API_SECRET)
-      .update(queryString)
-      .digest('hex');
-    
-    if (hmac !== calculatedHmac) {
-      console.error('OAuth HMAC verification failed');
-      return res.status(400).send('Invalid OAuth HMAC. Request may have been tampered with.');
-    }
-
-    // Exchange authorization code for access token
-    console.log('Exchanging authorization code for access token...');
-    let tokenData;
+    // Try to use shopify.auth.callback() first (requires cookies from shopify.auth.begin())
+    // If that fails, fall back to manual OAuth handling
+    let session;
+    let callbackHandledRedirect = false;
     try {
-      tokenData = await new Promise((resolve, reject) => {
-      const postData = JSON.stringify({
-        client_id: process.env.SHOPIFY_API_KEY,
-        client_secret: process.env.SHOPIFY_API_SECRET,
-        code: code,
+      const callbackResponse = await shopify.auth.callback({
+        rawRequest: req,
+        rawResponse: res,
       });
+      session = callbackResponse.session;
+      callbackHandledRedirect = res.headersSent;
+      console.log('OAuth callback - Using shopify.auth.callback(), session created:', {
+        id: session.id,
+        shop: session.shop,
+        hasAccessToken: !!session.accessToken,
+        redirectHandled: callbackHandledRedirect,
+      });
+      
+      // If shopify.auth.callback() already handled the redirect, we're done
+      if (callbackHandledRedirect) {
+        console.log('OAuth callback - shopify.auth.callback() handled redirect, exiting');
+        return;
+      }
+    } catch (callbackError) {
+      // If shopify.auth.callback() fails (e.g., missing OAuth cookie), use manual handling
+      console.warn('OAuth callback - shopify.auth.callback() failed, using manual OAuth handling:', callbackError.message);
+      
+      // Validate required OAuth parameters
+      const { code, shop, state, hmac } = req.query;
+      
+      if (!code || !shop || !hmac) {
+        return res.status(400).send('Missing required OAuth parameters: code, shop, or hmac');
+      }
 
-      const options = {
-        hostname: shop,
-        port: 443,
-        path: '/admin/oauth/access_token',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
+      // Validate state parameter (CSRF protection)
+      const expectedState = req.cookies.shopify_oauth_state;
+      if (!state || state !== expectedState) {
+        console.error('OAuth state mismatch:', {
+          received: state,
+          expected: expectedState,
+          cookies: req.cookies,
+        });
+        return res.status(400).send('Invalid OAuth state parameter. Please try the installation again.');
+      }
+
+      // Verify HMAC
+      const queryString = Object.keys(req.query)
+        .filter(key => key !== 'hmac' && key !== 'signature')
+        .sort()
+        .map(key => `${key}=${req.query[key]}`)
+        .join('&');
+      
+      const calculatedHmac = crypto
+        .createHmac('sha256', process.env.SHOPIFY_API_SECRET)
+        .update(queryString)
+        .digest('hex');
+      
+      if (hmac !== calculatedHmac) {
+        console.error('OAuth HMAC verification failed');
+        return res.status(400).send('Invalid OAuth HMAC. Request may have been tampered with.');
+      }
+
+      // Exchange authorization code for access token
+      console.log('Exchanging authorization code for access token...');
+      let tokenData;
+      try {
+        tokenData = await new Promise((resolve, reject) => {
+          const postData = JSON.stringify({
+            client_id: process.env.SHOPIFY_API_KEY,
+            client_secret: process.env.SHOPIFY_API_SECRET,
+            code: code,
+          });
+
+          const options = {
+            hostname: shop,
+            port: 443,
+            path: '/admin/oauth/access_token',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(postData),
+            },
+          };
+
+          const tokenReq = https.request(options, (tokenRes) => {
+            let data = '';
+            tokenRes.on('data', (chunk) => {
+              data += chunk;
+            });
+            tokenRes.on('end', () => {
+              if (tokenRes.statusCode !== 200) {
+                reject(new Error(`Token exchange failed: ${tokenRes.statusCode} - ${data}`));
+                return;
+              }
+              try {
+                resolve(JSON.parse(data));
+              } catch (e) {
+                reject(new Error(`Failed to parse token response: ${e.message}`));
+              }
+            });
+          });
+
+          tokenReq.on('error', (e) => {
+            reject(new Error(`Token exchange request failed: ${e.message}`));
+          });
+
+          tokenReq.write(postData);
+          tokenReq.end();
+        });
+      } catch (tokenError) {
+        console.error('Token exchange error:', tokenError);
+        return res.status(500).send(`Failed to exchange authorization code: ${tokenError.message}`);
+      }
+
+      const { access_token, scope } = tokenData;
+
+      if (!access_token) {
+        console.error('No access token in response:', tokenData);
+        return res.status(500).send('No access token received from Shopify');
+      }
+
+      // Create session object
+      const sessionId = `offline_${shop}`;
+      session = {
+        id: sessionId,
+        shop: shop,
+        state: state,
+        isOnline: false,
+        accessToken: access_token,
+        scope: scope,
       };
 
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`Token exchange failed: ${res.statusCode} - ${data}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(data));
-          } catch (e) {
-            reject(new Error(`Failed to parse token response: ${e.message}`));
-          }
-        });
+      console.log('OAuth callback - Manual session created:', {
+        id: session.id,
+        shop: session.shop,
+        hasAccessToken: !!session.accessToken,
+        scope: session.scope,
       });
-
-      req.on('error', (e) => {
-        reject(new Error(`Token exchange request failed: ${e.message}`));
-      });
-
-      req.write(postData);
-      req.end();
-      });
-    } catch (tokenError) {
-      console.error('Token exchange error:', tokenError);
-      return res.status(500).send(`Failed to exchange authorization code: ${tokenError.message}`);
     }
-
-    const { access_token, scope } = tokenData;
-
-    if (!access_token) {
-      console.error('No access token in response:', tokenData);
-      return res.status(500).send('No access token received from Shopify');
-    }
-
-    // Create session object
-    const sessionId = `offline_${shop}`;
-    const session = {
-      id: sessionId,
-      shop: shop,
-      state: state,
-      isOnline: false,
-      accessToken: access_token,
-      scope: scope,
-    };
-
-    console.log('OAuth callback - Session created:', {
-      id: session.id,
-      shop: session.shop,
-      hasAccessToken: !!session.accessToken,
-      scope: session.scope,
-    });
 
     // Update callback record with session ID and success status
     if (callbackRecord) {
