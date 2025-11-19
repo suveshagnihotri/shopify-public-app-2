@@ -517,6 +517,14 @@ app.get('/auth/callback', async (req, res) => {
     // Note: The host parameter is a base64-encoded store identifier
     const host = req.query.host;
     
+    // Log all query parameters for debugging
+    console.log('OAuth callback - Query parameters:', {
+      allParams: req.query,
+      hasHost: !!host,
+      hostValue: host,
+      shop: session.shop,
+    });
+    
     if (host) {
       // Construct grant page URL (format matches Shopify's expected URL)
       const grantPageUrl = `https://admin.shopify.com/store/${host}/app/grant`;
@@ -525,13 +533,41 @@ app.get('/auth/callback', async (req, res) => {
         host,
         shop: session.shop,
       });
-      res.redirect(grantPageUrl);
+      return res.redirect(grantPageUrl);
     } else {
-      // Fallback: redirect to app home if host is missing
-      console.warn('OAuth callback - Missing host parameter, redirecting to app home', {
+      // If host is missing, this is a critical error for automated checks
+      // Shopify always provides the host parameter in OAuth callbacks
+      // Log all details for debugging
+      console.error('OAuth callback - CRITICAL: Missing host parameter', {
         queryParams: Object.keys(req.query),
+        allQueryParams: req.query,
+        shop: session.shop,
+        url: req.url,
+        headers: {
+          referer: req.get('referer'),
+          userAgent: req.get('user-agent'),
+        },
       });
-      res.redirect(`/?shop=${encodeURIComponent(session.shop)}`);
+      
+      // For automated checks, Shopify expects redirect to grant page
+      // Without host, we cannot construct the grant page URL
+      // This will cause the automated check to fail
+      // Return an error instead of redirecting to avoid confusion
+      return res.status(500).send(`
+        <html>
+          <head><title>OAuth Error</title></head>
+          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h1>OAuth Configuration Error</h1>
+            <p><strong>Error:</strong> Missing 'host' parameter in OAuth callback</p>
+            <p>Shopify should always provide the 'host' parameter in OAuth callbacks. This error indicates a configuration issue.</p>
+            <p><strong>Received parameters:</strong></p>
+            <ul>
+              ${Object.keys(req.query).map(key => `<li>${key}: ${req.query[key]}</li>`).join('')}
+            </ul>
+            <p><a href="/auth?shop=${encodeURIComponent(session.shop || req.query.shop || 'YOUR_SHOP.myshopify.com')}">Try OAuth Again</a></p>
+          </body>
+        </html>
+      `);
     }
   } catch (error) {
     // Update callback record with error
