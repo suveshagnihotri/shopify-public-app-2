@@ -554,28 +554,18 @@ app.get('/auth/callback', async (req, res) => {
       path: '/',
     });
 
-    // For public (non-embedded) apps, redirect to Shopify admin grant page
-    // The grant page URL format: https://admin.shopify.com/store/{host}/app/grant
-    // The 'host' parameter is provided by Shopify in the callback query
-    const host = req.query.host;
+    // For public (non-embedded) apps, after OAuth completes, redirect to app homepage
+    // The automated check expects the app to redirect to its homepage after authentication
+    // The app homepage should return 200 and show the authenticated merchant UI
+    const appHomeUrl = `${appUrl}/?shop=${encodeURIComponent(session.shop)}`;
+    console.log('OAuth callback - Redirecting to app homepage after authentication:', {
+      appHomeUrl,
+      shop: session.shop,
+    });
     
-    if (!host) {
-      console.error('OAuth callback - CRITICAL: Missing host parameter', {
-        queryParams: Object.keys(req.query),
-        allQueryParams: req.query,
-      });
-      // Without host, we cannot redirect to grant page - this will fail automated check
-      return res.status(500).send('OAuth error: Missing host parameter');
-    }
-    
-    // Construct grant page URL and redirect immediately
-    // Do NOT delay - any delay can cause the automated check to fail
-    const grantPageUrl = `https://admin.shopify.com/store/${host}/app/grant`;
-    console.log('OAuth callback - Redirecting to grant page immediately:', grantPageUrl);
-    
-    // Use 302 redirect (temporary) - this is the standard for OAuth redirects
-    // The grant page will then redirect to the merchant UI, which should return 200
-    return res.redirect(302, grantPageUrl);
+    // Redirect to app homepage - this is what the automated check expects
+    // The app homepage will show the authenticated merchant interface
+    return res.redirect(302, appHomeUrl);
   } catch (error) {
     // Update callback record with error
     if (callbackRecord) {
