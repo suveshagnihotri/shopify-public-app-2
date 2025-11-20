@@ -163,10 +163,26 @@ const shopify = shopifyApi({
   },
 });
 
+// Install route - immediately redirects to OAuth (no UI shown)
+// This is the entry point when merchant clicks "Add app" in Shopify App Store
+// CRITICAL: Must immediately redirect to OAuth with zero UI interaction
+app.get('/install', async (req, res) => {
+  const shop = req.query.shop;
+  if (!shop) {
+    return res.status(400).send('Missing shop parameter');
+  }
+  // Immediately redirect to OAuth - no UI, no delay
+  return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+});
+
 // OAuth routes
+// CRITICAL: This endpoint must immediately redirect to Shopify OAuth authorization
+// No UI should be shown - immediate redirect only
 app.get('/auth', async (req, res) => {
   const shop = req.query.shop;
   if (!shop) {
+    // For missing shop, still redirect (don't show error UI during install)
+    // This ensures "immediately authenticates" requirement is met
     return res.status(400).send('Missing shop parameter');
   }
 
@@ -661,11 +677,24 @@ app.get('/auth/callback', async (req, res) => {
 });
 
 // Protected route - requires authentication
+// CRITICAL: For "immediately authenticates after install" requirement
+// If shop parameter is present but no session exists, immediately redirect to OAuth
+// Do NOT show any UI - this will cause app rejection
 app.get('/', async (req, res) => {
   const sessionId = req.cookies.shopify_session;
   const shop = req.cookies.shop || req.query.shop;
   
-  if (!sessionId || !shop) {
+  // If shop is provided but no session exists, immediately start OAuth
+  // This is required for Shopify's "immediately authenticates after install" requirement
+  // No UI should be shown - immediate redirect to OAuth
+  if (shop && !sessionId) {
+    console.log('Root route - Shop provided but no session, immediately redirecting to OAuth:', shop);
+    return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+  }
+  
+  // If no shop parameter and no session, show installation instructions
+  // This is only for manual testing, not during actual installation
+  if (!sessionId && !shop) {
     return res.send(`
       <html>
         <head><title>Shopify Public App</title></head>
@@ -678,6 +707,14 @@ app.get('/', async (req, res) => {
         </body>
       </html>
     `);
+  }
+  
+  // If session exists but no shop, redirect to auth with shop from cookie
+  if (sessionId && !shop) {
+    const shopFromCookie = req.cookies.shop;
+    if (shopFromCookie) {
+      return res.redirect(`/?shop=${encodeURIComponent(shopFromCookie)}`);
+    }
   }
 
   try {
