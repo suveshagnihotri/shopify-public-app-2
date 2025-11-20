@@ -208,14 +208,14 @@ app.get('/auth', async (req, res) => {
     // Use shopify.auth.begin() to properly set up OAuth state and cookies
     // This ensures compatibility with shopify.auth.callback() later
     try {
-      await shopify.auth.begin({
-        shop,
-        callbackPath: '/auth/callback',
-        isOnline: false,
-        rawRequest: req,
-        rawResponse: res,
-      });
-      
+    await shopify.auth.begin({
+      shop,
+      callbackPath: '/auth/callback',
+      isOnline: false,
+      rawRequest: req,
+      rawResponse: res,
+    });
+
       // If shopify.auth.begin() sent a response (redirect), we're done
       if (res.headersSent) {
         console.log('OAuth begin - Redirect sent by shopify.auth.begin()');
@@ -317,10 +317,10 @@ app.get('/auth/callback', async (req, res) => {
     let session;
     let callbackHandledRedirect = false;
     try {
-      const callbackResponse = await shopify.auth.callback({
-        rawRequest: req,
-        rawResponse: res,
-      });
+    const callbackResponse = await shopify.auth.callback({
+      rawRequest: req,
+      rawResponse: res,
+    });
       session = callbackResponse.session;
       callbackHandledRedirect = res.headersSent;
       console.log('OAuth callback - Using shopify.auth.callback(), session created:', {
@@ -331,10 +331,25 @@ app.get('/auth/callback', async (req, res) => {
       });
       
       // If shopify.auth.callback() already handled the redirect, we're done
+      // For non-embedded apps, shopify.auth.callback() should automatically redirect to grant page
       if (callbackHandledRedirect) {
         console.log('OAuth callback - shopify.auth.callback() handled redirect, exiting');
         return;
       }
+      
+      // If shopify.auth.callback() didn't redirect automatically, check for redirect URL in response
+      // Some versions might return the URL instead of redirecting directly
+      if (callbackResponse && typeof callbackResponse === 'object') {
+        const redirectUrl = callbackResponse.redirect || callbackResponse.url || callbackResponse.redirectUrl;
+        if (redirectUrl) {
+          console.log('OAuth callback - shopify.auth.callback() returned redirect URL:', redirectUrl);
+          return res.redirect(redirectUrl);
+        }
+      }
+      
+      // If we reach here, shopify.auth.callback() didn't redirect, so we need to handle it manually
+      // This should not happen for non-embedded apps, but we'll handle it
+      console.warn('OAuth callback - shopify.auth.callback() did not redirect, will handle manually');
     } catch (callbackError) {
       // If shopify.auth.callback() fails (e.g., missing OAuth cookie), use manual handling
       console.warn('OAuth callback - shopify.auth.callback() failed, using manual OAuth handling:', callbackError.message);
@@ -476,75 +491,49 @@ app.get('/auth/callback', async (req, res) => {
       // The session might still be usable
     }
     
-    // Store/update store information in MongoDB
-    try {
-      console.log('Storing shop/store data in MongoDB...');
-      
-      // Fetch shop data from Shopify API
-      const client = new shopify.clients.Rest({ session });
-      const shopData = await client.get({ path: 'shop' });
-      
-      // Log what shop data we received
-      console.log('Shop data received from Shopify API:', {
-        id: shopData.body.shop?.id,
-        name: shopData.body.shop?.name,
-        domain: shopData.body.shop?.domain,
-        email: shopData.body.shop?.email,
-        country: shopData.body.shop?.country,
-        currency: shopData.body.shop?.currency,
-        plan: shopData.body.shop?.plan_name,
-        totalFields: Object.keys(shopData.body.shop || {}).length,
-      });
-      
-      // Store or update store information
-      // shopData.body.shop contains ALL shop information including:
-      // id, name, email, domain, country, currency, timezone, plan details,
-      // payment settings, location info, and all other shop metadata
-      const updateData = {
-        shop: session.shop,
-        shopDomain: session.shop,
-        accessToken: session.accessToken,
-        scope: session.scope,
-        shopData: shopData.body.shop, // Complete shop object with all fields
-        isActive: true,
-        lastAccessAt: new Date(),
-      };
-      
-      const savedStore = await Store.findOneAndUpdate(
-        { shop: session.shop },
-        { 
-          ...updateData,
-          $unset: { uninstalledAt: 1 } // Remove uninstalledAt if it exists
-        },
-        { upsert: true, new: true }
-      );
-      
-      console.log('Store data stored successfully in MongoDB:', {
-        shop: session.shop,
-        shopName: shopData.body.shop?.name,
-        shopId: shopData.body.shop?.id,
-        email: shopData.body.shop?.email,
-        domain: shopData.body.shop?.domain,
-        country: shopData.body.shop?.country,
-        currency: shopData.body.shop?.currency,
-        plan: shopData.body.shop?.plan_name,
-        fieldsStored: savedStore?.shopData ? Object.keys(savedStore.shopData).length : 0,
-        storedInDB: !!savedStore,
-      });
-    } catch (storeError) {
-      console.error('Error storing shop data:', storeError);
-      // Don't throw - continue with OAuth flow even if store data storage fails
-    }
-    
-    // Verify session was stored
-    const storedSession = await sessionStorage.loadSession(session.id);
-    console.log('OAuth callback - Session stored check:', {
-      found: !!storedSession,
-      hasAccessToken: !!storedSession?.accessToken,
+    // Store/update store information in MongoDB (async, don't block redirect)
+    // Do this asynchronously to avoid delaying the redirect
+    setImmediate(async () => {
+      try {
+        console.log('Storing shop/store data in MongoDB...');
+        
+        // Fetch shop data from Shopify API
+        const client = new shopify.clients.Rest({ session });
+        const shopData = await client.get({ path: 'shop' });
+        
+        // Store or update store information
+        const updateData = {
+          shop: session.shop,
+          shopDomain: session.shop,
+          accessToken: session.accessToken,
+          scope: session.scope,
+          shopData: shopData.body.shop,
+          isActive: true,
+          lastAccessAt: new Date(),
+        };
+        
+        await Store.findOneAndUpdate(
+          { shop: session.shop },
+          { 
+            ...updateData,
+            $unset: { uninstalledAt: 1 }
+          },
+          { upsert: true, new: true }
+        );
+        
+        console.log('Store data stored successfully in MongoDB');
+      } catch (storeError) {
+        console.error('Error storing shop data (async):', storeError);
+        // Don't throw - this is async and shouldn't affect the redirect
+      }
     });
     
-    // Session is automatically stored by sessionStorage
-    // Use secure cookies if using HTTPS (ngrok or production)
+    // CRITICAL: For non-embedded apps, shopify.auth.callback() should have already redirected
+    // If it didn't, we need to redirect manually, but we must do it immediately
+    // Do NOT perform any async operations (like fetching shop data) before redirect
+    // This can cause delays and result in 400 errors during automated checks
+    
+    // Set cookies before redirect (synchronous operations only)
     const isSecure = appUrl.startsWith('https://') || process.env.NODE_ENV === 'production';
     
     res.cookie('shopify_session', session.id, {
@@ -568,61 +557,25 @@ app.get('/auth/callback', async (req, res) => {
     // For public (non-embedded) apps, redirect to Shopify admin grant page
     // The grant page URL format: https://admin.shopify.com/store/{host}/app/grant
     // The 'host' parameter is provided by Shopify in the callback query
-    // Note: The host parameter is a base64-encoded store identifier
     const host = req.query.host;
     
-    // Log all query parameters for debugging
-    console.log('OAuth callback - Query parameters:', {
-      allParams: req.query,
-      hasHost: !!host,
-      hostValue: host,
-      shop: session.shop,
-    });
-    
-    if (host) {
-      // Construct grant page URL (format matches Shopify's expected URL)
-      const grantPageUrl = `https://admin.shopify.com/store/${host}/app/grant`;
-      console.log('OAuth callback - Redirecting to grant page:', {
-        grantPageUrl,
-        host,
-        shop: session.shop,
-      });
-      return res.redirect(grantPageUrl);
-    } else {
-      // If host is missing, this is a critical error for automated checks
-      // Shopify always provides the host parameter in OAuth callbacks
-      // Log all details for debugging
+    if (!host) {
       console.error('OAuth callback - CRITICAL: Missing host parameter', {
         queryParams: Object.keys(req.query),
         allQueryParams: req.query,
-        shop: session.shop,
-        url: req.url,
-        headers: {
-          referer: req.get('referer'),
-          userAgent: req.get('user-agent'),
-        },
       });
-      
-      // For automated checks, Shopify expects redirect to grant page
-      // Without host, we cannot construct the grant page URL
-      // This will cause the automated check to fail
-      // Return an error instead of redirecting to avoid confusion
-      return res.status(500).send(`
-        <html>
-          <head><title>OAuth Error</title></head>
-          <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-            <h1>OAuth Configuration Error</h1>
-            <p><strong>Error:</strong> Missing 'host' parameter in OAuth callback</p>
-            <p>Shopify should always provide the 'host' parameter in OAuth callbacks. This error indicates a configuration issue.</p>
-            <p><strong>Received parameters:</strong></p>
-            <ul>
-              ${Object.keys(req.query).map(key => `<li>${key}: ${req.query[key]}</li>`).join('')}
-            </ul>
-            <p><a href="/auth?shop=${encodeURIComponent(session.shop || req.query.shop || 'YOUR_SHOP.myshopify.com')}">Try OAuth Again</a></p>
-          </body>
-        </html>
-      `);
+      // Without host, we cannot redirect to grant page - this will fail automated check
+      return res.status(500).send('OAuth error: Missing host parameter');
     }
+    
+    // Construct grant page URL and redirect immediately
+    // Do NOT delay - any delay can cause the automated check to fail
+    const grantPageUrl = `https://admin.shopify.com/store/${host}/app/grant`;
+    console.log('OAuth callback - Redirecting to grant page immediately:', grantPageUrl);
+    
+    // Use 302 redirect (temporary) - this is the standard for OAuth redirects
+    // The grant page will then redirect to the merchant UI, which should return 200
+    return res.redirect(302, grantPageUrl);
   } catch (error) {
     // Update callback record with error
     if (callbackRecord) {
