@@ -47,12 +47,26 @@ const app = express();
 app.set('trust proxy', true);
 
 // Security & performance middleware
+// CRITICAL: For non-embedded apps, we must prevent iframe embedding
+// This prevents the "application cannot be loaded" error
 app.use(
   helmet({
     contentSecurityPolicy: false, // keep simple; configure CSP separately if needed
     crossOriginEmbedderPolicy: false,
+    frameguard: {
+      action: 'deny', // Prevent embedding in iframes (required for non-embedded apps)
+    },
   }),
 );
+
+// Explicitly set X-Frame-Options header for non-embedded apps
+// This ensures Shopify doesn't try to load the app in an embedded context
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 app.use(compression());
 app.use(cookieParser());
 
