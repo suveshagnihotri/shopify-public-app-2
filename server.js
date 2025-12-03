@@ -667,7 +667,34 @@ app.get('/', async (req, res) => {
       cookies: req.cookies,
     });
     
-    const session = await sessionStorage.loadSession(sessionId);
+    let session = await sessionStorage.loadSession(sessionId);
+    
+    // If session not found by sessionId but we have shop, try loading by shop
+    if (!session && shop) {
+      console.log('Session not found by sessionId, trying to load by shop:', shop);
+      const sessionIdByShop = `offline_${shop}`;
+      session = await sessionStorage.loadSession(sessionIdByShop);
+      
+      if (session && session.accessToken) {
+        console.log('Session found by shop, updating cookies');
+        // Update cookies with the correct session ID
+        const isSecure = appUrl.startsWith('https://') || process.env.NODE_ENV === 'production';
+        res.cookie('shopify_session', session.id, {
+          httpOnly: true,
+          secure: isSecure,
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 60 * 60 * 24 * 365,
+        });
+        res.cookie('shop', session.shop, {
+          httpOnly: true,
+          secure: isSecure,
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 60 * 60 * 24 * 365,
+        });
+      }
+    }
     
     console.log('Loaded session:', {
       found: !!session,
@@ -681,7 +708,15 @@ app.get('/', async (req, res) => {
         sessionExists: !!session,
         sessionKeys: session ? Object.keys(session) : [],
         accessTokenExists: session?.accessToken ? 'yes' : 'no',
+        triedShopFallback: !!shop,
       });
+      
+      // If we have shop but no session, redirect to OAuth
+      if (shop) {
+        console.log('No valid session found, redirecting to OAuth');
+        return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+      }
+      
       throw new Error('Invalid session');
     }
 
@@ -984,9 +1019,98 @@ app.get('/', async (req, res) => {
     `);
   } catch (error) {
     console.error('Error loading session:', error);
+    console.error('Error details:', {
+      message: error.message,
+      sessionId,
+      shop,
+      cookies: req.cookies,
+    });
+    
+    // Clear invalid cookies
     res.clearCookie('shopify_session');
     res.clearCookie('shop');
-    res.status(401).send('Session expired. Please reinstall the app.');
+    
+    // If we have a shop parameter, redirect to OAuth to re-authenticate
+    // This is better than showing an error page
+    if (shop) {
+      console.log('Session error - redirecting to OAuth for shop:', shop);
+      return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+    }
+    
+    // If no shop parameter, show a helpful error page
+    res.status(401).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Session Expired - Peeq</title>
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 20px;
+            }
+            .container {
+              background: white;
+              border-radius: 16px;
+              box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+              max-width: 500px;
+              width: 100%;
+              padding: 40px;
+              text-align: center;
+            }
+            .error-icon {
+              width: 80px;
+              height: 80px;
+              background: #fee2e2;
+              border-radius: 50%;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              margin: 0 auto 24px;
+              font-size: 48px;
+            }
+            h1 {
+              color: #ef4444;
+              margin-bottom: 16px;
+              font-size: 28px;
+            }
+            p {
+              color: #6b7280;
+              margin-bottom: 24px;
+              line-height: 1.6;
+            }
+            .btn {
+              display: inline-block;
+              padding: 14px 28px;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              color: white;
+              text-decoration: none;
+              border-radius: 8px;
+              font-weight: 600;
+              transition: all 0.3s ease;
+            }
+            .btn:hover {
+              transform: translateY(-2px);
+              box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="error-icon">⚠️</div>
+            <h1>Session Expired</h1>
+            <p>Your session has expired or is invalid. Please reinstall the app to continue.</p>
+            <a href="/" class="btn">Go to Homepage</a>
+          </div>
+        </body>
+      </html>
+    `);
   }
 });
 
