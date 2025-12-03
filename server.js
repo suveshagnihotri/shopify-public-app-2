@@ -502,16 +502,17 @@ app.get('/auth/callback', async (req, res) => {
       }
     }
     
-    // Manually store the session since Shopify API may not be calling storeSession
-    // This ensures the session is persisted to MongoDB
+    // CRITICAL: Manually store the session BEFORE redirecting
+    // This ensures the session is persisted to MongoDB and available when homepage loads
+    // This prevents redirect loops where homepage can't find the session
     try {
-      console.log('Manually storing session after callback...');
+      console.log('Manually storing session after callback (synchronous, before redirect)...');
       await sessionStorage.storeSession(session);
-      console.log('Session manually stored successfully');
+      console.log('Session manually stored successfully, session ID:', session.id);
     } catch (storeError) {
       console.error('Error manually storing session:', storeError);
-      // Don't throw - continue with OAuth flow even if storage fails
-      // The session might still be usable
+      // If session storage fails, we should still try to continue
+      // but log the error for debugging
     }
     
     // Store/update store information in MongoDB (async, don't block redirect)
@@ -580,14 +581,21 @@ app.get('/auth/callback', async (req, res) => {
     // For public (non-embedded) apps, after OAuth completes, redirect to app homepage
     // The automated check expects the app to redirect to its homepage after authentication
     // The app homepage should return 200 and show the authenticated merchant UI
+    // IMPORTANT: Session is already stored above, so cookies should be available
     const appHomeUrl = `${appUrl}/?shop=${encodeURIComponent(session.shop)}`;
     console.log('OAuth callback - Redirecting to app homepage after authentication:', {
       appHomeUrl,
       shop: session.shop,
+      sessionId: session.id,
+      cookiesSet: {
+        shopify_session: session.id,
+        shop: session.shop,
+      },
     });
     
     // Redirect to app homepage - this is what the automated check expects
     // The app homepage will show the authenticated merchant interface
+    // The session cookie should be available immediately after this redirect
     return res.redirect(302, appHomeUrl);
   } catch (error) {
     // Update callback record with error
@@ -689,12 +697,216 @@ app.get('/', async (req, res) => {
   const sessionId = req.cookies.shopify_session;
   const shop = req.cookies.shop || req.query.shop;
   
-  // If shop is provided but no session exists, immediately start OAuth
-  // This is required for Shopify's "immediately authenticates after install" requirement
-  // No UI should be shown - immediate redirect to OAuth
+  // CRITICAL: Prevent redirect loops after OAuth callback
+  // If shop is provided but no session cookie exists, try loading from storage first
+  // This handles the case where OAuth callback just set cookies but they're not yet available
   if (shop && !sessionId) {
-    console.log('Root route - Shop provided but no session, immediately redirecting to OAuth:', shop);
-    return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+    console.log('Root route - Shop provided but no session cookie, checking storage...', shop);
+    
+    // Try to load session from storage using shop domain
+    try {
+      const sessionFromStorage = await sessionStorage.loadSession(`offline_${shop}`);
+      if (sessionFromStorage && sessionFromStorage.accessToken) {
+        console.log('Root route - Session found in storage, setting cookies and proceeding');
+        // Session exists in storage but cookie wasn't set - set it now
+        const isSecure = appUrl.startsWith('https://') || process.env.NODE_ENV === 'production';
+        res.cookie('shopify_session', sessionFromStorage.id, {
+          httpOnly: true,
+          secure: isSecure,
+          sameSite: 'lax',
+          path: '/',
+        });
+        res.cookie('shop', sessionFromStorage.shop, {
+          httpOnly: true,
+          secure: isSecure,
+          sameSite: 'lax',
+          path: '/',
+        });
+        // Update sessionId to use the one from storage
+        const updatedSessionId = sessionFromStorage.id;
+        // Continue with session loading below using updatedSessionId
+        // We'll use sessionFromStorage directly instead of loading again
+        const session = sessionFromStorage;
+        
+        // Fetch shop information
+        let shopData;
+        try {
+          const client = new shopify.clients.Rest({ session });
+          shopData = await client.get({ path: 'shop' });
+        } catch (apiError) {
+          console.error('Error fetching shop data from Shopify API:', apiError);
+          shopData = { body: { shop: { name: session.shop, domain: session.shop } } };
+        }
+
+        // Update last access time (async)
+        setImmediate(async () => {
+          try {
+            await Store.findOneAndUpdate(
+              { shop: session.shop },
+              { lastAccessAt: new Date() }
+            );
+          } catch (error) {
+            console.error('Error updating store last access:', error);
+          }
+        });
+
+        // Return proper HTML page
+        const shopInfo = shopData.body.shop;
+        return res.status(200).send(`
+          <!DOCTYPE html>
+          <html lang="en">
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Peeq - Shopify App</title>
+              <style>
+                * {
+                  margin: 0;
+                  padding: 0;
+                  box-sizing: border-box;
+                }
+                body {
+                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                  min-height: 100vh;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  padding: 20px;
+                }
+                .container {
+                  background: white;
+                  border-radius: 12px;
+                  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                  max-width: 600px;
+                  width: 100%;
+                  padding: 40px;
+                  text-align: center;
+                }
+                .success-icon {
+                  width: 80px;
+                  height: 80px;
+                  background: #10b981;
+                  border-radius: 50%;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  margin: 0 auto 24px;
+                }
+                .success-icon::after {
+                  content: '✓';
+                  color: white;
+                  font-size: 48px;
+                  font-weight: bold;
+                }
+                h1 {
+                  color: #1f2937;
+                  font-size: 28px;
+                  margin-bottom: 12px;
+                }
+                .subtitle {
+                  color: #6b7280;
+                  font-size: 16px;
+                  margin-bottom: 32px;
+                }
+                .shop-info {
+                  background: #f9fafb;
+                  border-radius: 8px;
+                  padding: 24px;
+                  margin-bottom: 24px;
+                  text-align: left;
+                }
+                .shop-info h2 {
+                  color: #1f2937;
+                  font-size: 18px;
+                  margin-bottom: 16px;
+                }
+                .info-row {
+                  display: flex;
+                  justify-content: space-between;
+                  padding: 12px 0;
+                  border-bottom: 1px solid #e5e7eb;
+                }
+                .info-row:last-child {
+                  border-bottom: none;
+                }
+                .info-label {
+                  color: #6b7280;
+                  font-weight: 500;
+                }
+                .info-value {
+                  color: #1f2937;
+                  font-weight: 600;
+                }
+                .actions {
+                  display: flex;
+                  gap: 12px;
+                  justify-content: center;
+                }
+                .btn {
+                  padding: 12px 24px;
+                  border-radius: 6px;
+                  text-decoration: none;
+                  font-weight: 600;
+                  transition: all 0.2s;
+                  display: inline-block;
+                }
+                .btn-primary {
+                  background: #667eea;
+                  color: white;
+                }
+                .btn-primary:hover {
+                  background: #5568d3;
+                }
+                .btn-secondary {
+                  background: #f3f4f6;
+                  color: #1f2937;
+                }
+                .btn-secondary:hover {
+                  background: #e5e7eb;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="success-icon"></div>
+                <h1>App Installed Successfully!</h1>
+                <p class="subtitle">Your Shopify store is now connected to Peeq</p>
+                
+                <div class="shop-info">
+                  <h2>Store Information</h2>
+                  <div class="info-row">
+                    <span class="info-label">Store Name:</span>
+                    <span class="info-value">${shopInfo.name || shopInfo.domain || session.shop}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">Domain:</span>
+                    <span class="info-value">${shopInfo.domain || session.shop}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">Status:</span>
+                    <span class="info-value" style="color: #10b981;">✓ Active</span>
+                  </div>
+                </div>
+                
+                <div class="actions">
+                  <a href="/api/products?shop=${encodeURIComponent(session.shop)}" class="btn btn-primary">View Products</a>
+                  <a href="https://admin.shopify.com/store/${session.shop.replace('.myshopify.com', '')}" class="btn btn-secondary" target="_blank">Shopify Admin</a>
+                </div>
+              </div>
+            </body>
+          </html>
+        `);
+      } else {
+        // Session doesn't exist in storage, redirect to OAuth
+        console.log('Root route - No session found in storage, redirecting to OAuth');
+        return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+      }
+    } catch (loadError) {
+      console.error('Root route - Error loading session from storage:', loadError);
+      // If loading fails, redirect to OAuth
+      return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+    }
   }
   
   // If no shop parameter and no session, show installation instructions
