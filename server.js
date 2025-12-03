@@ -326,44 +326,50 @@ app.get('/auth/callback', async (req, res) => {
       }, {}),
     });
     
-    // Try to use shopify.auth.callback() first (requires cookies from shopify.auth.begin())
-    // If that fails, fall back to manual OAuth handling
+    // CRITICAL: For non-embedded apps, we should NOT let shopify.auth.callback() handle redirects
+    // It may try to redirect to embedded app URLs, causing "application cannot be loaded" errors
+    // Instead, we'll use it only to create the session, then handle redirects ourselves
     let session;
     let callbackHandledRedirect = false;
+    
+    // Try to use shopify.auth.callback() to create session (but prevent its redirect)
     try {
-    const callbackResponse = await shopify.auth.callback({
-      rawRequest: req,
-      rawResponse: res,
-    });
+      // Create a response wrapper to detect if shopify.auth.callback() tries to redirect
+      const originalRedirect = res.redirect.bind(res);
+      let redirectCalled = false;
+      let redirectUrl = null;
+      
+      res.redirect = function(url) {
+        redirectCalled = true;
+        redirectUrl = url;
+        // Don't actually redirect - we'll handle it ourselves
+        console.log('OAuth callback - shopify.auth.callback() attempted redirect, intercepting:', url);
+      };
+      
+      const callbackResponse = await shopify.auth.callback({
+        rawRequest: req,
+        rawResponse: res,
+      });
+      
+      // Restore original redirect
+      res.redirect = originalRedirect;
+      
       session = callbackResponse.session;
-      callbackHandledRedirect = res.headersSent;
+      callbackHandledRedirect = redirectCalled;
+      
       console.log('OAuth callback - Using shopify.auth.callback(), session created:', {
         id: session.id,
         shop: session.shop,
         hasAccessToken: !!session.accessToken,
-        redirectHandled: callbackHandledRedirect,
+        attemptedRedirect: callbackHandledRedirect,
+        attemptedRedirectUrl: redirectUrl,
       });
       
-      // If shopify.auth.callback() already handled the redirect, we're done
-      // For non-embedded apps, shopify.auth.callback() should automatically redirect to grant page
+      // For non-embedded apps, we ignore shopify.auth.callback() redirects
+      // We'll handle the redirect ourselves to our app homepage
       if (callbackHandledRedirect) {
-        console.log('OAuth callback - shopify.auth.callback() handled redirect, exiting');
-        return;
+        console.log('OAuth callback - shopify.auth.callback() attempted redirect, but we will redirect to app homepage instead');
       }
-      
-      // If shopify.auth.callback() didn't redirect automatically, check for redirect URL in response
-      // Some versions might return the URL instead of redirecting directly
-      if (callbackResponse && typeof callbackResponse === 'object') {
-        const redirectUrl = callbackResponse.redirect || callbackResponse.url || callbackResponse.redirectUrl;
-        if (redirectUrl) {
-          console.log('OAuth callback - shopify.auth.callback() returned redirect URL:', redirectUrl);
-          return res.redirect(redirectUrl);
-        }
-      }
-      
-      // If we reach here, shopify.auth.callback() didn't redirect, so we need to handle it manually
-      // This should not happen for non-embedded apps, but we'll handle it
-      console.warn('OAuth callback - shopify.auth.callback() did not redirect, will handle manually');
     } catch (callbackError) {
       // If shopify.auth.callback() fails (e.g., missing OAuth cookie), use manual handling
       console.warn('OAuth callback - shopify.auth.callback() failed, using manual OAuth handling:', callbackError.message);
@@ -502,44 +508,60 @@ app.get('/auth/callback', async (req, res) => {
       }
     }
     
-    // CRITICAL: Manually store the session BEFORE redirecting
-    // This ensures the session is persisted to MongoDB and available when homepage loads
-    // This prevents redirect loops where homepage can't find the session
+    // CRITICAL: Store session and set cookies BEFORE redirecting
+    // This must happen synchronously to prevent redirect loops
+    const isSecure = appUrl.startsWith('https://') || process.env.NODE_ENV === 'production';
+    
+    // Set cookies first (before storing session, so they're available immediately)
+    res.cookie('shopify_session', session.id, {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 365, // 1 year
+    });
+    res.cookie('shop', session.shop, {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 365, // 1 year
+    });
+
+    // Clear the OAuth state cookie after successful authentication
+    res.clearCookie('shopify_oauth_state', {
+      path: '/',
+    });
+    
+    // CRITICAL: Store session in MongoDB BEFORE redirecting
+    // This ensures the session is available when homepage loads, preventing redirect loops
     try {
-      console.log('Manually storing session after callback (synchronous, before redirect)...');
+      console.log('Storing session before redirect (synchronous)...', session.id);
       await sessionStorage.storeSession(session);
-      console.log('Session manually stored successfully, session ID:', session.id);
+      console.log('Session stored successfully, session ID:', session.id);
     } catch (storeError) {
-      console.error('Error manually storing session:', storeError);
-      // If session storage fails, we should still try to continue
-      // but log the error for debugging
+      console.error('Error storing session:', storeError);
+      // Even if storage fails, continue with redirect - cookies are set
+      // The session might still work for this request
     }
     
     // Store/update store information in MongoDB (async, don't block redirect)
-    // Do this asynchronously to avoid delaying the redirect
     setImmediate(async () => {
       try {
-        console.log('Storing shop/store data in MongoDB...');
-        
-        // Fetch shop data from Shopify API
+        console.log('Storing shop/store data in MongoDB (async)...');
         const client = new shopify.clients.Rest({ session });
         const shopData = await client.get({ path: 'shop' });
-        
-        // Store or update store information
-        const updateData = {
-          shop: session.shop,
-          shopDomain: session.shop,
-          accessToken: session.accessToken,
-          scope: session.scope,
-          shopData: shopData.body.shop,
-          isActive: true,
-          lastAccessAt: new Date(),
-        };
         
         await Store.findOneAndUpdate(
           { shop: session.shop },
           { 
-            ...updateData,
+            shop: session.shop,
+            shopDomain: session.shop,
+            accessToken: session.accessToken,
+            scope: session.scope,
+            shopData: shopData.body.shop,
+            isActive: true,
+            lastAccessAt: new Date(),
             $unset: { uninstalledAt: 1 }
           },
           { upsert: true, new: true }
@@ -548,54 +570,21 @@ app.get('/auth/callback', async (req, res) => {
         console.log('Store data stored successfully in MongoDB');
       } catch (storeError) {
         console.error('Error storing shop data (async):', storeError);
-        // Don't throw - this is async and shouldn't affect the redirect
       }
     });
-    
-    // CRITICAL: For non-embedded apps, shopify.auth.callback() should have already redirected
-    // If it didn't, we need to redirect manually, but we must do it immediately
-    // Do NOT perform any async operations (like fetching shop data) before redirect
-    // This can cause delays and result in 400 errors during automated checks
-    
-    // Set cookies before redirect (synchronous operations only)
-    const isSecure = appUrl.startsWith('https://') || process.env.NODE_ENV === 'production';
-    
-    res.cookie('shopify_session', session.id, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: 'lax',
-      path: '/',
-    });
-    res.cookie('shop', session.shop, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: 'lax',
-      path: '/',
-    });
 
-    // Clear the OAuth state cookie after successful authentication
-    res.clearCookie('shopify_oauth_state', {
-      path: '/',
-    });
-
-    // For public (non-embedded) apps, after OAuth completes, redirect to app homepage
-    // The automated check expects the app to redirect to its homepage after authentication
-    // The app homepage should return 200 and show the authenticated merchant UI
-    // IMPORTANT: Session is already stored above, so cookies should be available
+    // For public (non-embedded) apps, redirect to our app homepage (not Shopify admin)
+    // This prevents "application cannot be loaded" errors from embedded app attempts
+    // The session and cookies are now set, so homepage will find them
     const appHomeUrl = `${appUrl}/?shop=${encodeURIComponent(session.shop)}`;
-    console.log('OAuth callback - Redirecting to app homepage after authentication:', {
+    console.log('OAuth callback - Redirecting to app homepage (non-embedded):', {
       appHomeUrl,
       shop: session.shop,
       sessionId: session.id,
-      cookiesSet: {
-        shopify_session: session.id,
-        shop: session.shop,
-      },
     });
     
-    // Redirect to app homepage - this is what the automated check expects
-    // The app homepage will show the authenticated merchant interface
-    // The session cookie should be available immediately after this redirect
+    // Redirect to app homepage - cookies are set, session is stored
+    // Homepage will find the session cookie and display the app
     return res.redirect(302, appHomeUrl);
   } catch (error) {
     // Update callback record with error
@@ -707,7 +696,7 @@ app.get('/', async (req, res) => {
     try {
       const sessionFromStorage = await sessionStorage.loadSession(`offline_${shop}`);
       if (sessionFromStorage && sessionFromStorage.accessToken) {
-        console.log('Root route - Session found in storage, setting cookies and proceeding');
+        console.log('Root route - Session found in storage, setting cookies');
         // Session exists in storage but cookie wasn't set - set it now
         const isSecure = appUrl.startsWith('https://') || process.env.NODE_ENV === 'production';
         res.cookie('shopify_session', sessionFromStorage.id, {
@@ -715,188 +704,17 @@ app.get('/', async (req, res) => {
           secure: isSecure,
           sameSite: 'lax',
           path: '/',
+          maxAge: 60 * 60 * 24 * 365,
         });
         res.cookie('shop', sessionFromStorage.shop, {
           httpOnly: true,
           secure: isSecure,
           sameSite: 'lax',
           path: '/',
+          maxAge: 60 * 60 * 24 * 365,
         });
-        // Update sessionId to use the one from storage
-        const updatedSessionId = sessionFromStorage.id;
-        // Continue with session loading below using updatedSessionId
-        // We'll use sessionFromStorage directly instead of loading again
-        const session = sessionFromStorage;
-        
-        // Fetch shop information
-        let shopData;
-        try {
-          const client = new shopify.clients.Rest({ session });
-          shopData = await client.get({ path: 'shop' });
-        } catch (apiError) {
-          console.error('Error fetching shop data from Shopify API:', apiError);
-          shopData = { body: { shop: { name: session.shop, domain: session.shop } } };
-        }
-
-        // Update last access time (async)
-        setImmediate(async () => {
-          try {
-            await Store.findOneAndUpdate(
-              { shop: session.shop },
-              { lastAccessAt: new Date() }
-            );
-          } catch (error) {
-            console.error('Error updating store last access:', error);
-          }
-        });
-
-        // Return proper HTML page
-        const shopInfo = shopData.body.shop;
-        return res.status(200).send(`
-          <!DOCTYPE html>
-          <html lang="en">
-            <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Peeq - Shopify App</title>
-              <style>
-                * {
-                  margin: 0;
-                  padding: 0;
-                  box-sizing: border-box;
-                }
-                body {
-                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-                  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                  min-height: 100vh;
-                  display: flex;
-                  align-items: center;
-                  justify-content: center;
-                  padding: 20px;
-                }
-                .container {
-                  background: white;
-                  border-radius: 12px;
-                  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-                  max-width: 600px;
-                  width: 100%;
-                  padding: 40px;
-                  text-align: center;
-                }
-                .success-icon {
-                  width: 80px;
-                  height: 80px;
-                  background: #10b981;
-                  border-radius: 50%;
-                  display: flex;
-                  align-items: center;
-                  justify-content: center;
-                  margin: 0 auto 24px;
-                }
-                .success-icon::after {
-                  content: '✓';
-                  color: white;
-                  font-size: 48px;
-                  font-weight: bold;
-                }
-                h1 {
-                  color: #1f2937;
-                  font-size: 28px;
-                  margin-bottom: 12px;
-                }
-                .subtitle {
-                  color: #6b7280;
-                  font-size: 16px;
-                  margin-bottom: 32px;
-                }
-                .shop-info {
-                  background: #f9fafb;
-                  border-radius: 8px;
-                  padding: 24px;
-                  margin-bottom: 24px;
-                  text-align: left;
-                }
-                .shop-info h2 {
-                  color: #1f2937;
-                  font-size: 18px;
-                  margin-bottom: 16px;
-                }
-                .info-row {
-                  display: flex;
-                  justify-content: space-between;
-                  padding: 12px 0;
-                  border-bottom: 1px solid #e5e7eb;
-                }
-                .info-row:last-child {
-                  border-bottom: none;
-                }
-                .info-label {
-                  color: #6b7280;
-                  font-weight: 500;
-                }
-                .info-value {
-                  color: #1f2937;
-                  font-weight: 600;
-                }
-                .actions {
-                  display: flex;
-                  gap: 12px;
-                  justify-content: center;
-                }
-                .btn {
-                  padding: 12px 24px;
-                  border-radius: 6px;
-                  text-decoration: none;
-                  font-weight: 600;
-                  transition: all 0.2s;
-                  display: inline-block;
-                }
-                .btn-primary {
-                  background: #667eea;
-                  color: white;
-                }
-                .btn-primary:hover {
-                  background: #5568d3;
-                }
-                .btn-secondary {
-                  background: #f3f4f6;
-                  color: #1f2937;
-                }
-                .btn-secondary:hover {
-                  background: #e5e7eb;
-                }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <div class="success-icon"></div>
-                <h1>App Installed Successfully!</h1>
-                <p class="subtitle">Your Shopify store is now connected to Peeq</p>
-                
-                <div class="shop-info">
-                  <h2>Store Information</h2>
-                  <div class="info-row">
-                    <span class="info-label">Store Name:</span>
-                    <span class="info-value">${shopInfo.name || shopInfo.domain || session.shop}</span>
-                  </div>
-                  <div class="info-row">
-                    <span class="info-label">Domain:</span>
-                    <span class="info-value">${shopInfo.domain || session.shop}</span>
-                  </div>
-                  <div class="info-row">
-                    <span class="info-label">Status:</span>
-                    <span class="info-value" style="color: #10b981;">✓ Active</span>
-                  </div>
-                </div>
-                
-                <div class="actions">
-                  <a href="/api/products?shop=${encodeURIComponent(session.shop)}" class="btn btn-primary">View Products</a>
-                  <a href="https://admin.shopify.com/store/${session.shop.replace('.myshopify.com', '')}" class="btn btn-secondary" target="_blank">Shopify Admin</a>
-                </div>
-              </div>
-            </body>
-          </html>
-        `);
+        // Use the session from storage and continue to render page below
+        sessionId = sessionFromStorage.id;
       } else {
         // Session doesn't exist in storage, redirect to OAuth
         console.log('Root route - No session found in storage, redirecting to OAuth');
@@ -907,6 +725,12 @@ app.get('/', async (req, res) => {
       // If loading fails, redirect to OAuth
       return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
     }
+  }
+  
+  // If shop is provided but no session exists (and not found in storage), redirect to OAuth
+  if (shop && !sessionId) {
+    console.log('Root route - Shop provided but no session, redirecting to OAuth:', shop);
+    return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
   }
   
   // If no shop parameter and no session, show installation instructions
