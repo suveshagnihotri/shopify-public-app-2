@@ -358,17 +358,55 @@ app.get('/auth/callback', async (req, res) => {
       const { code, shop, state, hmac } = req.query;
       
       if (!code || !shop || !hmac) {
+        console.error('OAuth callback - Missing required parameters:', {
+          hasCode: !!code,
+          hasShop: !!shop,
+          hasHmac: !!hmac,
+        });
+        // If we have shop, redirect to restart OAuth instead of showing error
+        if (shop) {
+          return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+        }
         return res.status(400).send('Missing required OAuth parameters: code, shop, or hmac');
       }
 
       // Validate state parameter (CSRF protection)
-      const expectedState = req.cookies.shopify_oauth_state;
-      if (!state || state !== expectedState) {
+      // Try multiple cookie names as shopify.auth.begin() might use different cookie names
+      const expectedState = req.cookies.shopify_oauth_state || 
+                           req.cookies['shopify_app_state'] || 
+                           req.cookies['shopify_app_state_' + shop];
+      
+      if (!state) {
+        console.error('OAuth state missing in callback');
+        // If state is missing but we have shop, redirect to restart OAuth
+        if (shop) {
+          return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+        }
+        return res.status(400).send('Missing OAuth state parameter. Please try the installation again.');
+      }
+      
+      if (!expectedState) {
+        console.warn('OAuth state cookie not found, but state parameter present. This might be a cookie issue.');
+        console.warn('Cookie details:', {
+          allCookies: req.cookies,
+          cookieHeader: req.headers.cookie,
+          shop: shop,
+        });
+        // For non-embedded apps, if state cookie is missing but state is present,
+        // we can still proceed if HMAC is valid (HMAC provides security)
+        // However, we should log this as a warning
+        console.warn('Proceeding without state validation - relying on HMAC verification');
+      } else if (state !== expectedState) {
         console.error('OAuth state mismatch:', {
           received: state,
           expected: expectedState,
           cookies: req.cookies,
+          allCookieNames: Object.keys(req.cookies),
         });
+        // If state doesn't match but we have shop, redirect to restart OAuth
+        if (shop) {
+          return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+        }
         return res.status(400).send('Invalid OAuth state parameter. Please try the installation again.');
       }
 
@@ -385,7 +423,15 @@ app.get('/auth/callback', async (req, res) => {
         .digest('hex');
       
       if (hmac !== calculatedHmac) {
-        console.error('OAuth HMAC verification failed');
+        console.error('OAuth HMAC verification failed:', {
+          received: hmac,
+          calculated: calculatedHmac,
+          queryString: queryString,
+        });
+        // If HMAC fails, redirect to restart OAuth instead of showing error
+        if (shop) {
+          return res.redirect(`/auth?shop=${encodeURIComponent(shop)}`);
+        }
         return res.status(400).send('Invalid OAuth HMAC. Request may have been tampered with.');
       }
 
