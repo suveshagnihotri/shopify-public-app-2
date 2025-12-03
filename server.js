@@ -270,10 +270,10 @@ app.get('/auth', async (req, res) => {
 });
 
 app.get('/auth/callback', async (req, res) => {
-  // Store OAuth callback data in MongoDB
-  let callbackRecord = null;
+  // CRITICAL: Store OAuth callback data asynchronously (non-blocking)
+  // This prevents timeouts - we'll log it in the background
+  setImmediate(async () => {
   try {
-    // Store callback request data
     const callbackData = {
       shop: req.query.shop,
       code: req.query.code,
@@ -293,18 +293,17 @@ app.get('/auth/callback', async (req, res) => {
         url: req.url,
       },
     };
-
-    callbackRecord = await OAuthCallback.create(callbackData);
-    console.log('OAuth callback data stored:', {
+      const callbackRecord = await OAuthCallback.create(callbackData);
+      console.log('OAuth callback data stored (async):', {
       id: callbackRecord._id,
       shop: callbackRecord.shop,
-      hasCode: !!callbackRecord.code,
-      hasState: !!callbackRecord.state,
     });
   } catch (callbackStoreError) {
-    console.error('Error storing OAuth callback data:', callbackStoreError);
-    // Continue with OAuth flow even if callback storage fails
+      console.error('Error storing OAuth callback data (async):', callbackStoreError);
   }
+  });
+  
+  let callbackRecord = null; // Keep for error handling later
 
   try {
     // Log cookies for debugging
@@ -345,12 +344,12 @@ app.get('/auth/callback', async (req, res) => {
         // Don't actually redirect - we'll handle it ourselves
         console.log('OAuth callback - shopify.auth.callback() attempted redirect, intercepting:', url);
       };
-      
-      const callbackResponse = await shopify.auth.callback({
-        rawRequest: req,
-        rawResponse: res,
-      });
-      
+    
+    const callbackResponse = await shopify.auth.callback({
+      rawRequest: req,
+      rawResponse: res,
+    });
+
       // Restore original redirect
       res.redirect = originalRedirect;
       
@@ -358,9 +357,9 @@ app.get('/auth/callback', async (req, res) => {
       callbackHandledRedirect = redirectCalled;
       
       console.log('OAuth callback - Using shopify.auth.callback(), session created:', {
-        id: session.id,
-        shop: session.shop,
-        hasAccessToken: !!session.accessToken,
+      id: session.id,
+      shop: session.shop,
+      hasAccessToken: !!session.accessToken,
         attemptedRedirect: callbackHandledRedirect,
         attemptedRedirectUrl: redirectUrl,
       });
@@ -508,11 +507,12 @@ app.get('/auth/callback', async (req, res) => {
       }
     }
     
-    // CRITICAL: Store session and set cookies BEFORE redirecting
-    // This must happen synchronously to prevent redirect loops
+    // CRITICAL: Set cookies and redirect IMMEDIATELY
+    // Store session with a timeout to prevent blocking too long
+    // This prevents 504 Gateway Timeout errors
     const isSecure = appUrl.startsWith('https://') || process.env.NODE_ENV === 'production';
     
-    // Set cookies first (before storing session, so they're available immediately)
+    // Set cookies immediately (synchronous operation)
     res.cookie('shopify_session', session.id, {
       httpOnly: true,
       secure: isSecure,
@@ -528,24 +528,31 @@ app.get('/auth/callback', async (req, res) => {
       maxAge: 60 * 60 * 24 * 365, // 1 year
     });
 
-    // Clear the OAuth state cookie after successful authentication
+    // Clear the OAuth state cookie
     res.clearCookie('shopify_oauth_state', {
       path: '/',
     });
     
-    // CRITICAL: Store session in MongoDB BEFORE redirecting
-    // This ensures the session is available when homepage loads, preventing redirect loops
+    // CRITICAL: Store session with timeout to prevent 504 errors
+    // If storage takes too long, we'll continue anyway (cookies are set)
+    const storeSessionPromise = sessionStorage.storeSession(session).catch(err => {
+      console.error('Error storing session:', err);
+      return null; // Don't throw, just log
+    });
+    
+    // Wait for session storage with a 2-second timeout
+    // If it takes longer, we'll redirect anyway (cookies are already set)
+    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 2000));
+    
     try {
-      console.log('Storing session before redirect (synchronous)...', session.id);
-      await sessionStorage.storeSession(session);
-      console.log('Session stored successfully, session ID:', session.id);
-    } catch (storeError) {
-      console.error('Error storing session:', storeError);
-      // Even if storage fails, continue with redirect - cookies are set
-      // The session might still work for this request
+      await Promise.race([storeSessionPromise, timeoutPromise]);
+      console.log('Session storage completed or timed out, session ID:', session.id);
+    } catch (err) {
+      console.error('Session storage error:', err);
+      // Continue anyway - cookies are set
     }
     
-    // Store/update store information in MongoDB (async, don't block redirect)
+    // Store shop data in MongoDB asynchronously (non-blocking, after redirect)
     setImmediate(async () => {
       try {
         console.log('Storing shop/store data in MongoDB (async)...');
@@ -568,8 +575,8 @@ app.get('/auth/callback', async (req, res) => {
         );
         
         console.log('Store data stored successfully in MongoDB');
-      } catch (storeError) {
-        console.error('Error storing shop data (async):', storeError);
+      } catch (shopError) {
+        console.error('Error storing shop data (async):', shopError);
       }
     });
 
@@ -672,9 +679,9 @@ app.get('/auth/callback', async (req, res) => {
             <p>There was an error during authentication. Please try installing the app again.</p>
             <a href="/" class="btn">Go to Homepage</a>
           </div>
-        </body>
-      </html>
-    `);
+          </body>
+        </html>
+      `);
   }
 });
 
@@ -789,8 +796,8 @@ app.get('/', async (req, res) => {
     let shopData;
     try {
       shopData = await client.get({
-        path: 'shop',
-      });
+      path: 'shop',
+    });
     } catch (apiError) {
       console.error('Error fetching shop data from Shopify API:', apiError);
       // If API call fails, still show the app but without shop data
@@ -800,14 +807,14 @@ app.get('/', async (req, res) => {
 
     // Update last access time for the store (async, don't block response)
     setImmediate(async () => {
-      try {
-        await Store.findOneAndUpdate(
-          { shop: session.shop },
-          { lastAccessAt: new Date() }
-        );
-      } catch (error) {
-        console.error('Error updating store last access:', error);
-      }
+    try {
+      await Store.findOneAndUpdate(
+        { shop: session.shop },
+        { lastAccessAt: new Date() }
+      );
+    } catch (error) {
+      console.error('Error updating store last access:', error);
+    }
     });
 
     // Return proper HTML page instead of JSON to prevent "pretty print" error pages
